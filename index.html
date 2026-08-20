@@ -175,6 +175,9 @@
                     <!-- 補助線を引いているときの下書き -->
                     <line id="guide-preview" x1="0" y1="0" x2="0" y2="0" stroke="#475569" stroke-width="2.5" stroke-dasharray="8,6" stroke-linecap="round" vector-effect="non-scaling-stroke" style="display:none;" />
 
+                    <!-- うら返したときの折り目（少しのあいだ表示） -->
+                    <line id="flip-axis" x1="0" y1="0" x2="0" y2="0" stroke="#0ea5e9" stroke-width="5" stroke-linecap="round" vector-effect="non-scaling-stroke" style="display:none;" />
+
                     <!-- Snap Indicator (Dynamic) -->
                     <circle id="snap-marker" r="9" fill="none" stroke="#16a34a" stroke-width="3" vector-effect="non-scaling-stroke" style="display:none;" />
                 </g>
@@ -275,6 +278,7 @@
         const cutLayer = document.getElementById('cut-layer');
         const cutLine = document.getElementById('cut-line');
         const guidePreview = document.getElementById('guide-preview');
+        const flipAxis = document.getElementById('flip-axis');
         const snapMarker = document.getElementById('snap-marker');
         const toast = document.getElementById('instruction-toast');
 
@@ -392,7 +396,7 @@
                 'move': '👆 図形をドラッグして移動させよう',
                 'cut': '✂️ スワイプして切ろう。とちゅうで止めると切りこみになるよ',
                 'rotate': '🔄 図形をタップして45度回そう',
-                'flip': '🪞 図形をタップして左右にうら返そう',
+                'flip': '🪞 折り目にしたい辺の近くをタップしてうら返そう',
                 'color': '🎨 図形をタップして色を変えよう',
                 'guide': '📏 スワイプして補助線を引こう',
                 'erase': '🧽 消したい図形や補助線をタップしよう'
@@ -1387,8 +1391,9 @@
                 }
                 else if (currentTool === 'flip') {
                     saveState(); // うら返す前に状態を保存
-                    flipShape(shape);
+                    const edge = flipShapeOverEdge(shape, pt);
                     renderShapes();
+                    showFlipAxis(edge);
                 }
                 else if (currentTool === 'color') {
                     saveState(); // 色変更前に状態を保存
@@ -1518,18 +1523,78 @@
             }
         }
 
-        // 左右にうら返す（その場でひっくり返るので位置は変わらない）
-        function flipShape(shape) {
-            const minX = Math.min(...shape.points.map(p => p.x));
-            const maxX = Math.max(...shape.points.map(p => p.x));
-            const sum = minX + maxX; // 左右の折り返し線（中心の2倍）
+        // 平行移動だけでマスの交点にそろえられるなら、その動かす量を返す。
+        // そろえられない向き（斜め）のときは動かしません。
+        function gridFixOffset(pts) {
+            const ax = findAnchor(pts, 'x');
+            const ay = findAnchor(pts, 'y');
+            const fx = snap(ax) - ax;
+            const fy = snap(ay) - ay;
+            const fits = pts.every(p =>
+                Math.abs(snap(p.x + fx) - (p.x + fx)) < 0.01 &&
+                Math.abs(snap(p.y + fy) - (p.y + fy)) < 0.01
+            );
+            return fits ? {dx: fx, dy: fy} : {dx: 0, dy: 0};
+        }
 
-            // x座標を折り返す。頂点がマスの交点にあれば、うら返しても交点のまま
-            shape.points = shape.points.map(p => ({x: sum - p.x, y: p.y}));
+        // 直線ABを折り目にして、点Pを反対がわへ折り返す
+        function reflectPoint(p, a, b) {
+            const vx = b.x - a.x, vy = b.y - a.y;
+            const len2 = vx * vx + vy * vy;
+            if (len2 < 0.0001) return {x: p.x, y: p.y};
+            const t = ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2;
+            const fx = a.x + vx * t;   // 折り目に下ろした垂線の足
+            const fy = a.y + vy * t;
+            return {x: 2 * fx - p.x, y: 2 * fy - p.y};
+        }
+
+        // タップした場所にいちばん近い辺は何本目か
+        function nearestEdgeIndex(shape, pt) {
+            const n = shape.points.length;
+            let best = 0, bestDist = Infinity;
+            for (let i = 0; i < n; i++) {
+                const q = closestPointOnSegment(pt, shape.points[i], shape.points[(i + 1) % n]);
+                const d = Math.hypot(pt.x - q.x, pt.y - q.y);
+                if (d < bestDist) { bestDist = d; best = i; }
+            }
+            return best;
+        }
+
+        // 選んだ辺を折り目にして、線対称にうら返す。
+        // 折り目にした辺はその場に残るので、同じ辺の近くをもう一度タップすれば元に戻ります。
+        function flipShapeOverEdge(shape, pt) {
+            const n = shape.points.length;
+            const i = nearestEdgeIndex(shape, pt);
+            const a = {x: shape.points[i].x, y: shape.points[i].y};
+            const b = {x: shape.points[(i + 1) % n].x, y: shape.points[(i + 1) % n].y};
+
+            const pts = shape.points.map(p => reflectPoint(p, a, b));
+            // 斜めの辺で折ると交点から外れます。まっすぐな辺や45度の辺のときは交点に戻します
+            const fix = gridFixOffset(pts);
+
+            shape.points = pts.map(p => ({x: p.x + fix.dx, y: p.y + fix.dy}));
             // 頂点をたどる向きが逆になるので、順番も入れかえる
             shape.points.reverse();
             // 切りこみもいっしょにうら返す
-            if (shape.cutPath) shape.cutPath = shape.cutPath.map(p => ({x: sum - p.x, y: p.y}));
+            if (shape.cutPath) {
+                shape.cutPath = shape.cutPath.map(p => {
+                    const q = reflectPoint(p, a, b);
+                    return {x: q.x + fix.dx, y: q.y + fix.dy};
+                });
+            }
+            return {a: a, b: b}; // 折り目（画面に少しのあいだ表示します）
+        }
+
+        // どの辺で折ったかが分かるように、折り目をしばらく光らせる
+        let flipAxisTimer = null;
+        function showFlipAxis(edge) {
+            flipAxis.setAttribute('x1', edge.a.x);
+            flipAxis.setAttribute('y1', edge.a.y);
+            flipAxis.setAttribute('x2', edge.b.x);
+            flipAxis.setAttribute('y2', edge.b.y);
+            flipAxis.style.display = 'block';
+            if (flipAxisTimer) clearTimeout(flipAxisTimer);
+            flipAxisTimer = setTimeout(() => { flipAxis.style.display = 'none'; }, 900);
         }
 
         // 45度ずつ回す。
@@ -1556,16 +1621,9 @@
             let dy = cy - (Math.min(...ry) + Math.max(...ry)) / 2;
 
             // ②平行移動だけでマスの交点にそろえられる向き（＝90度ごとの向き）なら、交点に戻す
-            const moved = pts.map(p => ({x: p.x + dx, y: p.y + dy}));
-            const ax = findAnchor(moved, 'x');
-            const ay = findAnchor(moved, 'y');
-            const fx = snap(ax) - ax;
-            const fy = snap(ay) - ay;
-            const fitsGrid = moved.every(p =>
-                Math.abs(snap(p.x + fx) - (p.x + fx)) < 0.01 &&
-                Math.abs(snap(p.y + fy) - (p.y + fy)) < 0.01
-            );
-            if (fitsGrid) { dx += fx; dy += fy; }
+            const fix = gridFixOffset(pts.map(p => ({x: p.x + dx, y: p.y + dy})));
+            dx += fix.dx;
+            dy += fix.dy;
 
             shape.points = pts.map(p => ({x: p.x + dx, y: p.y + dy}));
             if (shape.cutPath) {
