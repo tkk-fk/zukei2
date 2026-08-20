@@ -91,6 +91,11 @@
         </div>
         <div id="shape-menu" class="thin-scroll p-2 sm:p-3 flex-1 flex flex-row sm:flex-col gap-2 overflow-x-auto sm:overflow-y-auto"></div>
         <div class="p-2 sm:p-3 border-t border-green-100 flex flex-col gap-2">
+            <div class="flex gap-1 items-center">
+                <button onclick="zoomStep(-1)" id="btn-zoom-out" class="w-10 h-9 rounded-xl font-bold text-lg leading-none bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700">－</button>
+                <button onclick="resetZoom()" id="btn-zoom-label" class="flex-1 h-9 px-1 rounded-xl font-bold text-xs bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 whitespace-nowrap">🔍 100%</button>
+                <button onclick="zoomStep(1)" id="btn-zoom-in" class="w-10 h-9 rounded-xl font-bold text-lg leading-none bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700">＋</button>
+            </div>
             <div class="flex gap-2">
                 <button onclick="openSettings()" class="flex-1 px-2 py-2 rounded-xl font-bold text-sm bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700">
                     ⚙️ 大きさ
@@ -147,28 +152,32 @@
                 <!-- Grid Pattern -->
                 <defs>
                     <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-                        <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#cbd5e1" stroke-width="1.5"/>
+                        <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#cbd5e1" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
                     </pattern>
                 </defs>
-                <rect width="100%" height="100%" fill="url(#grid)" />
-                
-                <!-- Group for Shapes -->
-                <g id="shapes-layer"></g>
 
-                <!-- 補助線（じゃまにならないよう、使うツールのときだけタップできる） -->
-                <g id="guides-layer"></g>
+                <!-- ここから内側が拡大・縮小されます（図形の座標そのものは変わりません） -->
+                <g id="view">
+                    <rect id="grid-rect" x="0" y="0" width="100%" height="100%" fill="url(#grid)" />
 
-                <!-- とちゅうで止まっている切りこみ -->
-                <g id="cut-layer"></g>
+                    <!-- Group for Shapes -->
+                    <g id="shapes-layer"></g>
 
-                <!-- Cutting Line (Dynamic) -->
-                <line id="cut-line" x1="0" y1="0" x2="0" y2="0" stroke="#ef4444" stroke-width="3" stroke-dasharray="5,5" style="display:none;" />
+                    <!-- 補助線（じゃまにならないよう、使うツールのときだけタップできる） -->
+                    <g id="guides-layer"></g>
 
-                <!-- 補助線を引いているときの下書き -->
-                <line id="guide-preview" x1="0" y1="0" x2="0" y2="0" stroke="#475569" stroke-width="2.5" stroke-dasharray="8,6" stroke-linecap="round" style="display:none;" />
+                    <!-- とちゅうで止まっている切りこみ -->
+                    <g id="cut-layer"></g>
 
-                <!-- Snap Indicator (Dynamic) -->
-                <circle id="snap-marker" r="9" fill="none" stroke="#16a34a" stroke-width="3" style="display:none;" />
+                    <!-- Cutting Line (Dynamic) -->
+                    <line id="cut-line" x1="0" y1="0" x2="0" y2="0" stroke="#ef4444" stroke-width="3" stroke-dasharray="5,5" vector-effect="non-scaling-stroke" style="display:none;" />
+
+                    <!-- 補助線を引いているときの下書き -->
+                    <line id="guide-preview" x1="0" y1="0" x2="0" y2="0" stroke="#475569" stroke-width="2.5" stroke-dasharray="8,6" stroke-linecap="round" vector-effect="non-scaling-stroke" style="display:none;" />
+
+                    <!-- Snap Indicator (Dynamic) -->
+                    <circle id="snap-marker" r="9" fill="none" stroke="#16a34a" stroke-width="3" vector-effect="non-scaling-stroke" style="display:none;" />
+                </g>
             </svg>
             
             <!-- Instructions Overlay -->
@@ -259,6 +268,8 @@
 
         // Canvas Elements
         const svg = document.getElementById('workspace');
+        const viewGroup = document.getElementById('view');
+        const gridRect = document.getElementById('grid-rect');
         const shapesLayer = document.getElementById('shapes-layer');
         const guidesLayer = document.getElementById('guides-layer');
         const cutLayer = document.getElementById('cut-layer');
@@ -266,6 +277,95 @@
         const guidePreview = document.getElementById('guide-preview');
         const snapMarker = document.getElementById('snap-marker');
         const toast = document.getElementById('instruction-toast');
+
+        // ===== マスの大きさ（拡大・縮小）=====
+        // 図形の座標（1マス＝40）はそのままにして、見え方だけを変えます。
+        // こうするとスナップも切る計算もリンクの中身も今までどおりです。
+        const ZOOM_STEPS = [0.4, 0.5, 0.65, 0.8, 1, 1.25, 1.6, 2, 2.5];
+        let zoom = 1;   // 画面上での倍率
+        let panX = 0;   // 画面の位置 ＝ pan ＋ zoom × 図形の位置
+        let panY = 0;
+
+        // 画面の真ん中に見えている場所（図形の座標で）
+        function viewCenterWorld() {
+            const r = svg.getBoundingClientRect();
+            return {x: (r.width / 2 - panX) / zoom, y: (r.height / 2 - panY) / zoom};
+        }
+
+        function updateView() {
+            viewGroup.setAttribute('transform', 'translate(' + panX + ',' + panY + ') scale(' + zoom + ')');
+
+            // マス目の下地は、いま見えている範囲を覆うだけの大きさにする
+            const r = svg.getBoundingClientRect();
+            const x0 = Math.floor((-panX / zoom) / GRID_SIZE) * GRID_SIZE - GRID_SIZE;
+            const y0 = Math.floor((-panY / zoom) / GRID_SIZE) * GRID_SIZE - GRID_SIZE;
+            gridRect.setAttribute('x', x0);
+            gridRect.setAttribute('y', y0);
+            gridRect.setAttribute('width', r.width / zoom + GRID_SIZE * 3);
+            gridRect.setAttribute('height', r.height / zoom + GRID_SIZE * 3);
+
+            // 指で押す目印は、倍率が変わっても画面上の大きさが同じになるようにする
+            snapMarker.setAttribute('r', 9 / zoom);
+
+            const label = document.getElementById('btn-zoom-label');
+            if (label) label.textContent = '🔍 ' + Math.round(zoom * 100) + '%';
+            const out = document.getElementById('btn-zoom-out');
+            const inn = document.getElementById('btn-zoom-in');
+            if (out) out.classList.toggle('is-disabled', zoom <= ZOOM_STEPS[0]);
+            if (inn) inn.classList.toggle('is-disabled', zoom >= ZOOM_STEPS[ZOOM_STEPS.length - 1]);
+        }
+
+        // 画面の真ん中を動かさずに倍率だけ変える
+        function setZoom(next) {
+            const r = svg.getBoundingClientRect();
+            const cx = r.width / 2, cy = r.height / 2;
+            const wx = (cx - panX) / zoom, wy = (cy - panY) / zoom;
+            zoom = next;
+            panX = cx - zoom * wx;
+            panY = cy - zoom * wy;
+            updateView();
+            renderShapes(); // 線の太さや印の大きさを引き直す
+        }
+
+        function zoomStep(dir) {
+            let i = ZOOM_STEPS.indexOf(zoom);
+            if (i < 0) i = ZOOM_STEPS.indexOf(1);
+            const j = Math.max(0, Math.min(ZOOM_STEPS.length - 1, i + dir));
+            if (ZOOM_STEPS[j] === zoom) {
+                showToast(dir > 0 ? 'これ以上大きくできません' : 'これ以上小さくできません');
+                return;
+            }
+            setZoom(ZOOM_STEPS[j]);
+            showToast('🔍 マスの大きさ ' + Math.round(zoom * 100) + '%');
+        }
+
+        function resetZoom() {
+            if (zoom === 1) {
+                showToast('🔍 いま100%です');
+                return;
+            }
+            setZoom(1);
+            showToast('🔍 マスの大きさを100%に戻しました');
+        }
+
+        // ならべたものが画面に収まる倍率まで小さくする（リンクから開いたとき用）
+        function fitZoomTo(wUnits, hUnits) {
+            const r = svg.getBoundingClientRect();
+            if (!r.width || !r.height) return;
+            let i = ZOOM_STEPS.indexOf(zoom);
+            if (i < 0) i = ZOOM_STEPS.indexOf(1);
+            for (let j = i; j >= 0; j--) {
+                const fitW = wUnits * GRID_SIZE * ZOOM_STEPS[j] <= r.width - 24;
+                const fitH = hUnits * GRID_SIZE * ZOOM_STEPS[j] <= r.height - 24;
+                if (fitW && fitH) {
+                    if (ZOOM_STEPS[j] !== zoom) setZoom(ZOOM_STEPS[j]);
+                    return;
+                }
+            }
+            setZoom(ZOOM_STEPS[0]);
+        }
+
+        window.addEventListener('resize', updateView);
 
         // Interaction State
         let isDragging = false;
@@ -285,16 +385,16 @@
             const btn = document.getElementById('btn-' + tool);
             if (btn) btn.classList.add('active');
 
-            // 補助線はこの2つのツールのときだけタップして選べる
-            guidesLayer.classList.toggle('pickable', tool === 'guide' || tool === 'erase');
+            // 補助線をタップして消せるのは「消す」のときだけ
+            guidesLayer.classList.toggle('pickable', tool === 'erase');
 
             const messages = {
                 'move': '👆 図形をドラッグして移動させよう',
                 'cut': '✂️ スワイプして切ろう。とちゅうで止めると切りこみになるよ',
-                'rotate': '🔄 図形をタップして90度回そう',
+                'rotate': '🔄 図形をタップして45度回そう',
                 'flip': '🪞 図形をタップして左右にうら返そう',
                 'color': '🎨 図形をタップして色を変えよう',
-                'guide': '📏 スワイプして補助線を引こう。線をタップすると消えるよ',
+                'guide': '📏 スワイプして補助線を引こう',
                 'erase': '🧽 消したい図形や補助線をタップしよう'
             };
             showToast(messages[tool]);
@@ -533,11 +633,12 @@
             snapMarker.style.display = 'block';
         }
 
+        // 画面上の指の位置を、図形の座標に直す（拡大・縮小の分もここで戻ります）
         function getMousePos(evt) {
             let pt = svg.createSVGPoint();
             pt.x = (typeof evt.clientX === 'number') ? evt.clientX : 0;
             pt.y = (typeof evt.clientY === 'number') ? evt.clientY : 0;
-            return pt.matrixTransform(svg.getScreenCTM().inverse());
+            return pt.matrixTransform(viewGroup.getScreenCTM().inverse());
         }
 
         // ===== 図形のかたち（数値はすべて「マス目の数」）=====
@@ -618,7 +719,9 @@
             }
         };
 
-        const STORAGE_KEY = 'tkk-zukei-shape-params';
+        // 保存キー。末尾の番号を変えると、前に保存された「大きさ」を読まずに
+        // コードに書いた初期値から始まります（初期値を変えたときはここも上げる）
+        const STORAGE_KEY = 'tkk-zukei-shape-params-v2';
         let shapeParams = {};
         let settingsType = 'triangle';
 
@@ -785,9 +888,12 @@
             const minX = Math.min(...xs), minY = Math.min(...ys);
             const w = Math.max(...xs) - minX, h = Math.max(...ys) - minY;
 
-            const rect = svg.getBoundingClientRect();
-            const ox = snap(rect.width / 2 - (w * GRID_SIZE) / 2);
-            const oy = snap(rect.height / 2 - (h * GRID_SIZE) / 2);
+            // 画面に収まらないほど大きなならびなら、マスを小さくして全部見えるようにする
+            fitZoomTo(w, h);
+
+            const c = viewCenterWorld();
+            const ox = snap(c.x - (w * GRID_SIZE) / 2);
+            const oy = snap(c.y - (h * GRID_SIZE) / 2);
             const toPx = (ux, uy) => ({x: ox + (ux - minX) * GRID_SIZE, y: oy + (uy - minY) * GRID_SIZE});
 
             shapes = shapeList.map(s => ({
@@ -1082,10 +1188,10 @@
             const w = Math.max(...def.map(u => u[0]));
             const h = Math.max(...def.map(u => u[1]));
 
-            // 画面の中央あたりに置く。左上の基準点をマスの交点にそろえる
-            const rect = svg.getBoundingClientRect();
-            const ox = snap(rect.width / 2 - (w * GRID_SIZE) / 2);
-            const oy = snap(rect.height / 2 - (h * GRID_SIZE) / 2);
+            // いま見えている範囲の中央に置く。左上の基準点をマスの交点にそろえる
+            const c = viewCenterWorld();
+            const ox = snap(c.x - (w * GRID_SIZE) / 2);
+            const oy = snap(c.y - (h * GRID_SIZE) / 2);
 
             const points = def.map(u => ({
                 x: ox + u[0] * GRID_SIZE,
@@ -1125,6 +1231,7 @@
                 polygon.setAttribute("stroke", shape.color.stroke);
                 polygon.setAttribute("stroke-linejoin", "round");
                 polygon.setAttribute("stroke-width", "2");
+                polygon.setAttribute("vector-effect", "non-scaling-stroke");
                 polygon.setAttribute("class", "shape-polygon");
                 polygon.setAttribute("data-id", shape.id);
                 polygon.setAttribute("data-index", index);
@@ -1149,6 +1256,7 @@
                 pl.setAttribute('fill', 'none');
                 pl.setAttribute('stroke', '#ef4444');
                 pl.setAttribute('stroke-width', '3');
+                pl.setAttribute('vector-effect', 'non-scaling-stroke');
                 pl.setAttribute('stroke-dasharray', '7,5');
                 pl.setAttribute('stroke-linecap', 'round');
                 pl.setAttribute('stroke-linejoin', 'round');
@@ -1159,10 +1267,11 @@
                     const c = document.createElementNS(SVG_NS, 'circle');
                     c.setAttribute('cx', p.x);
                     c.setAttribute('cy', p.y);
-                    c.setAttribute('r', '4.5');
+                    c.setAttribute('r', 4.5 / zoom); // 倍率が変わっても同じ大きさに見えるように
                     c.setAttribute('fill', '#ffffff');
                     c.setAttribute('stroke', '#ef4444');
                     c.setAttribute('stroke-width', '2.5');
+                    c.setAttribute('vector-effect', 'non-scaling-stroke');
                     cutLayer.appendChild(c);
                 });
             });
@@ -1176,7 +1285,7 @@
                 hit.setAttribute('x1', g.x1); hit.setAttribute('y1', g.y1);
                 hit.setAttribute('x2', g.x2); hit.setAttribute('y2', g.y2);
                 hit.setAttribute('stroke', 'transparent');
-                hit.setAttribute('stroke-width', '20');
+                hit.setAttribute('stroke-width', 20 / zoom); // 指で押しやすい太さを保つ
                 hit.setAttribute('stroke-linecap', 'round');
                 hit.setAttribute('pointer-events', 'stroke');
                 hit.setAttribute('data-guide-id', g.id);
@@ -1187,6 +1296,7 @@
                 vis.setAttribute('x2', g.x2); vis.setAttribute('y2', g.y2);
                 vis.setAttribute('stroke', '#475569');
                 vis.setAttribute('stroke-width', '2.5');
+                vis.setAttribute('vector-effect', 'non-scaling-stroke');
                 vis.setAttribute('stroke-dasharray', '8,6');
                 vis.setAttribute('stroke-linecap', 'round');
                 vis.setAttribute('pointer-events', 'none');
@@ -1236,9 +1346,9 @@
             let pt = getMousePos(e);
             let target = e.target;
 
-            // 補助線をタップして消す
+            // 補助線をタップして消す（「消す」のときだけ。引いている最中に消えないように）
             const guideId = (target && target.getAttribute) ? target.getAttribute('data-guide-id') : null;
-            if (guideId && (currentTool === 'guide' || currentTool === 'erase')) {
+            if (guideId && currentTool === 'erase') {
                 saveState();
                 guides = guides.filter(g => g.id !== guideId);
                 renderShapes();
@@ -1422,31 +1532,46 @@
             if (shape.cutPath) shape.cutPath = shape.cutPath.map(p => ({x: sum - p.x, y: p.y}));
         }
 
-        // 90度ずつ回す。
-        // 45度だと頂点がマスの交点から外れてしまい（1マス40px → 斜めは約28.28px）、
-        // マス目で面積を数えられなくなるため、直角に回すようにしています。
-        // かけ算を使わず引き算と足し算だけで計算するので、誤差はたまりません。
+        // 45度ずつ回す。
+        // 45度の向きでは、頂点はマスの交点から外れます（1マス40px → 斜めは約28.28px）。
+        // そのぶん、2回まわして90度の向きに戻ったときは必ず交点に戻すようにしてあります。
+        // また、回したあとに外わくの中心を元の場所へ戻すので、何度まわしても図形が流れていきません。
         function rotateShape(shape) {
             const xs = shape.points.map(p => p.x);
             const ys = shape.points.map(p => p.y);
             const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
             const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
 
-            const turn = p => ({ x: cx - (p.y - cy), y: cy + (p.x - cx) }); // 時計回りに90度
+            const cos = Math.SQRT1_2, sin = Math.SQRT1_2; // 45度
+            const turn = p => ({
+                x: cx + (p.x - cx) * cos - (p.y - cy) * sin,
+                y: cy + (p.x - cx) * sin + (p.y - cy) * cos
+            });
 
             const pts = shape.points.map(turn);
-            // たて＋よこのマス数が奇数の図形は、中心で回すと頂点が半マスずれます。
-            // ドラッグのときと同じ考え方で、いちばんマスの線に近い頂点を交点に戻します。
-            const ax = findAnchor(pts, 'x');
-            const ay = findAnchor(pts, 'y');
+
+            // ①回したあとの外わくの中心を、回す前と同じ場所に戻す
+            const rx = pts.map(p => p.x), ry = pts.map(p => p.y);
+            let dx = cx - (Math.min(...rx) + Math.max(...rx)) / 2;
+            let dy = cy - (Math.min(...ry) + Math.max(...ry)) / 2;
+
+            // ②平行移動だけでマスの交点にそろえられる向き（＝90度ごとの向き）なら、交点に戻す
+            const moved = pts.map(p => ({x: p.x + dx, y: p.y + dy}));
+            const ax = findAnchor(moved, 'x');
+            const ay = findAnchor(moved, 'y');
             const fx = snap(ax) - ax;
             const fy = snap(ay) - ay;
+            const fitsGrid = moved.every(p =>
+                Math.abs(snap(p.x + fx) - (p.x + fx)) < 0.01 &&
+                Math.abs(snap(p.y + fy) - (p.y + fy)) < 0.01
+            );
+            if (fitsGrid) { dx += fx; dy += fy; }
 
-            shape.points = pts.map(p => ({x: p.x + fx, y: p.y + fy}));
+            shape.points = pts.map(p => ({x: p.x + dx, y: p.y + dy}));
             if (shape.cutPath) {
                 shape.cutPath = shape.cutPath.map(p => {
                     const q = turn(p);
-                    return {x: q.x + fx, y: q.y + fy};
+                    return {x: q.x + dx, y: q.y + dy};
                 });
             }
         }
@@ -1750,6 +1875,7 @@
         loadShapeParams();
         if (applyLinkParams()) saveShapeParams(); // リンクの設定が優先
         renderMenu();
+        updateView();                             // マスの大きさの表示を整える
         if (applyLinkScene()) renderShapes();     // リンクに図形や補助線が入っていれば並べる
         updateHistoryButtons();
         setTimeout(() => showToast('左のメニューから図形を追加してね！'), 500);
