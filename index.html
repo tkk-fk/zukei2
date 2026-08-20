@@ -1,0 +1,1759 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>図形の面積プロトタイプ</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Kosugi+Maru&display=swap');
+        html, body {
+            height: 100vh;
+            height: 100dvh; /* スマホのアドレスバー分を除いた実際の高さ */
+        }
+        body {
+            font-family: 'Kosugi Maru', sans-serif;
+            background-color: #f0fdf4;
+            margin: 0;
+            overflow: hidden;
+            overscroll-behavior: none;      /* 引っぱって再読み込みされるのを防ぐ */
+            touch-action: none;             /* ドラッグ中に画面が動かないようにする */
+            -webkit-user-select: none;
+            user-select: none;              /* 長押しで文字が選択されるのを防ぐ */
+            -webkit-touch-callout: none;
+            -webkit-tap-highlight-color: transparent;
+            padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+            box-sizing: border-box;
+        }
+        button { -webkit-tap-highlight-color: transparent; }
+        /* 横スクロールする列のスクロールバーを細く */
+        .thin-scroll::-webkit-scrollbar { height: 4px; width: 4px; }
+        .thin-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        /* リンクのURLだけは選択・コピーできるように */
+        #share-url { -webkit-user-select: text; user-select: text; }
+        /* 図形メニューのアイコン（狭い画面では少し小さく） */
+        #shape-menu svg { width: 36px; height: 36px; }
+        #shape-menu button { padding: 0.5rem; }
+        @media (min-width: 640px) {
+            #shape-menu svg { width: 40px; height: 40px; }
+            #shape-menu button { padding: 0.75rem; }
+        }
+        /* 設定パネルのプレビュー（背の低い画面では小さく） */
+        #settings-preview svg { height: 104px; }
+        @media (min-height: 700px) { #settings-preview svg { height: 150px; } }
+        .tool-btn.active {
+            background-color: #3b82f6;
+            color: white;
+            box-shadow: inset 0 3px 5px rgba(0,0,0,0.2);
+            transform: scale(0.95);
+        }
+        .shape-polygon {
+            transition: stroke-width 0.2s;
+            cursor: pointer;
+        }
+        .shape-polygon:hover {
+            stroke-width: 4;
+        }
+        #workspace {
+            touch-action: none; /* Important for touch devices */
+        }
+        /* 補助線は「補助線」「消す」のときだけタップで拾えるようにする */
+        #guides-layer { pointer-events: none; }
+        #guides-layer.pickable { pointer-events: auto; }
+        /* 切りこみ（とちゅうで止まっている切り線）はタップを邪魔しない */
+        #cut-layer { pointer-events: none; }
+        .is-disabled {
+            opacity: 0.35;
+            cursor: default;
+        }
+        #settings-overlay, #share-overlay {
+            touch-action: auto;
+        }
+        .tab-btn.active {
+            background-color: #22c55e;
+            color: white;
+            border-color: #16a34a;
+        }
+        .opt-btn.active {
+            background-color: #3b82f6;
+            color: white;
+            border-color: #2563eb;
+        }
+    </style>
+</head>
+<body class="w-screen flex flex-col sm:flex-row">
+
+    <!-- Sidebar: Shape Selector -->
+    <div class="bg-white w-full sm:w-40 lg:w-56 border-b sm:border-b-0 sm:border-r border-green-200 shadow-md flex flex-col z-10 flex-shrink-0">
+        <div class="hidden sm:block py-3 bg-green-500 text-white font-bold text-lg text-center">
+            📐 図形メニュー
+        </div>
+        <div id="shape-menu" class="thin-scroll p-2 sm:p-3 flex-1 flex flex-row sm:flex-col gap-2 overflow-x-auto sm:overflow-y-auto"></div>
+        <div class="p-2 sm:p-3 border-t border-green-100 flex flex-col gap-2">
+            <div class="flex gap-2">
+                <button onclick="openSettings()" class="flex-1 px-2 py-2 rounded-xl font-bold text-sm bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700">
+                    ⚙️ 大きさ
+                </button>
+                <button onclick="openShare()" class="flex-1 px-2 py-2 rounded-xl font-bold text-sm bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700">
+                    🔗 リンク
+                </button>
+            </div>
+            <p class="hidden lg:block text-xs text-gray-500 text-center">マス目は1辺1cmのイメージです</p>
+        </div>
+    </div>
+
+    <!-- Main Content Area -->
+    <div class="flex-1 flex flex-col relative min-h-0 min-w-0">
+        <div class="thin-scroll bg-white border-b border-gray-200 px-2 py-2 sm:px-3 flex items-center gap-2 overflow-x-auto shadow-sm z-10">
+                <button onclick="setTool('move')" id="btn-move" class="tool-btn active flex-shrink-0 px-4 py-2 rounded-full font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300">
+                    👆 移動
+                </button>
+                <button onclick="setTool('cut')" id="btn-cut" class="tool-btn flex-shrink-0 px-4 py-2 rounded-full font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300">
+                    ✂️ 切る
+                </button>
+                <button onclick="setTool('rotate')" id="btn-rotate" class="tool-btn flex-shrink-0 px-4 py-2 rounded-full font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300">
+                    🔄 回す
+                </button>
+                <button onclick="setTool('flip')" id="btn-flip" class="tool-btn flex-shrink-0 px-4 py-2 rounded-full font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300">
+                    🪞 うら返す
+                </button>
+                <button onclick="setTool('color')" id="btn-color" class="tool-btn flex-shrink-0 px-4 py-2 rounded-full font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300">
+                    🎨 色ぬり
+                </button>
+                <button onclick="setTool('guide')" id="btn-guide" class="tool-btn flex-shrink-0 px-4 py-2 rounded-full font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300 whitespace-nowrap">
+                    📏 補助線
+                </button>
+                <button onclick="setTool('erase')" id="btn-erase" class="tool-btn flex-shrink-0 px-4 py-2 rounded-full font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300">
+                    🧽 消す
+                </button>
+                <div class="w-px h-7 bg-gray-300 flex-shrink-0 sm:ml-auto"></div>
+                <button onclick="undo()" id="btn-undo" class="flex-shrink-0 is-disabled px-4 py-2 rounded-full font-bold bg-yellow-100 text-yellow-700 hover:bg-yellow-200 border border-yellow-300 whitespace-nowrap">
+                    ↩️ もどる
+                </button>
+                <button onclick="redo()" id="btn-redo" class="flex-shrink-0 is-disabled px-4 py-2 rounded-full font-bold bg-sky-100 text-sky-700 hover:bg-sky-200 border border-sky-300 whitespace-nowrap">
+                    ↪️ すすむ
+                </button>
+                <button onclick="resetToPlaced()" id="btn-reset" class="flex-shrink-0 px-4 py-2 rounded-full font-bold bg-orange-100 text-orange-600 hover:bg-orange-200 border border-orange-300 whitespace-nowrap">
+                    ♻️ リセット
+                </button>
+                <button onclick="clearAll()" id="btn-clear" class="flex-shrink-0 px-4 py-2 rounded-full font-bold bg-red-100 text-red-600 hover:bg-red-200 border border-red-300 whitespace-nowrap">
+                    🗑️ 全て消す
+                </button>
+        </div>
+
+        <div class="flex-1 relative w-full bg-blue-50 overflow-hidden cursor-crosshair min-h-0">
+            <svg id="workspace" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+                <!-- Grid Pattern -->
+                <defs>
+                    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+                        <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#cbd5e1" stroke-width="1.5"/>
+                    </pattern>
+                </defs>
+                <rect width="100%" height="100%" fill="url(#grid)" />
+                
+                <!-- Group for Shapes -->
+                <g id="shapes-layer"></g>
+
+                <!-- 補助線（じゃまにならないよう、使うツールのときだけタップできる） -->
+                <g id="guides-layer"></g>
+
+                <!-- とちゅうで止まっている切りこみ -->
+                <g id="cut-layer"></g>
+
+                <!-- Cutting Line (Dynamic) -->
+                <line id="cut-line" x1="0" y1="0" x2="0" y2="0" stroke="#ef4444" stroke-width="3" stroke-dasharray="5,5" style="display:none;" />
+
+                <!-- 補助線を引いているときの下書き -->
+                <line id="guide-preview" x1="0" y1="0" x2="0" y2="0" stroke="#475569" stroke-width="2.5" stroke-dasharray="8,6" stroke-linecap="round" style="display:none;" />
+
+                <!-- Snap Indicator (Dynamic) -->
+                <circle id="snap-marker" r="9" fill="none" stroke="#16a34a" stroke-width="3" style="display:none;" />
+            </svg>
+            
+            <!-- Instructions Overlay -->
+            <div id="instruction-toast" class="absolute bottom-3 left-1/2 transform -translate-x-1/2 max-w-[92%] bg-gray-800 text-white px-4 py-2 sm:px-6 sm:py-3 rounded-full opacity-80 pointer-events-none transition-opacity duration-300 text-xs sm:text-sm md:text-base text-center">
+                図形を選んで追加してね！
+            </div>
+        </div>
+    </div>
+
+    <!-- QR Code generator (qrcode-generator v2.0.4, MIT License, (c) Kazuhiko Arase) https://github.com/kazuhikoarase/qrcode-generator -->
+    <script>var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],f={},c=function(t,r){o=function(t){for(var r=new Array(t),e=0;e<t;e+=1){r[e]=new Array(t);for(var n=0;n<t;n+=1)r[e][n]=null}return r}(i=4*e+17),l(0,0),l(i-7,0),l(0,i-7),s(),h(),d(t,r),e>=7&&v(t),null==a&&(a=p(e,n,u)),w(a,r)},l=function(t,r){for(var e=-1;e<=7;e+=1)if(!(t+e<=-1||i<=t+e))for(var n=-1;n<=7;n+=1)r+n<=-1||i<=r+n||(o[t+e][r+n]=0<=e&&e<=6&&(0==n||6==n)||0<=n&&n<=6&&(0==e||6==e)||2<=e&&e<=4&&2<=n&&n<=4)},h=function(){for(var t=8;t<i-8;t+=1)null==o[t][6]&&(o[t][6]=t%2==0);for(var r=8;r<i-8;r+=1)null==o[6][r]&&(o[6][r]=r%2==0)},s=function(){for(var t=B.getPatternPosition(e),r=0;r<t.length;r+=1)for(var n=0;n<t.length;n+=1){var i=t[r],a=t[n];if(null==o[i][a])for(var u=-2;u<=2;u+=1)for(var f=-2;f<=2;f+=1)o[i+u][a+f]=-2==u||2==u||-2==f||2==f||0==u&&0==f}},v=function(t){for(var r=B.getBCHTypeNumber(e),n=0;n<18;n+=1){var a=!t&&1==(r>>n&1);o[Math.floor(n/3)][n%3+i-8-3]=a}for(n=0;n<18;n+=1){a=!t&&1==(r>>n&1);o[n%3+i-8-3][Math.floor(n/3)]=a}},d=function(t,r){for(var e=n<<3|r,a=B.getBCHTypeInfo(e),u=0;u<15;u+=1){var f=!t&&1==(a>>u&1);u<6?o[u][8]=f:u<8?o[u+1][8]=f:o[i-15+u][8]=f}for(u=0;u<15;u+=1){f=!t&&1==(a>>u&1);u<8?o[8][i-u-1]=f:u<9?o[8][15-u-1+1]=f:o[8][15-u-1]=f}o[i-8][8]=!t},w=function(t,r){for(var e=-1,n=i-1,a=7,u=0,f=B.getMaskFunction(r),c=i-1;c>0;c-=2)for(6==c&&(c-=1);;){for(var g=0;g<2;g+=1)if(null==o[n][c-g]){var l=!1;u<t.length&&(l=1==(t[u]>>>a&1)),f(n,c-g)&&(l=!l),o[n][c-g]=l,-1==(a-=1)&&(u+=1,a=7)}if((n+=e)<0||i<=n){n-=e,e=-e;break}}},p=function(t,r,e){for(var n=A.getRSBlocks(t,r),o=b(),i=0;i<e.length;i+=1){var a=e[i];o.put(a.getMode(),4),o.put(a.getLength(),B.getLengthInBits(a.getMode(),t)),a.write(o)}var u=0;for(i=0;i<n.length;i+=1)u+=n[i].dataCount;if(o.getLengthInBits()>8*u)throw"code length overflow. ("+o.getLengthInBits()+">"+8*u+")";for(o.getLengthInBits()+4<=8*u&&o.put(0,4);o.getLengthInBits()%8!=0;)o.putBit(!1);for(;!(o.getLengthInBits()>=8*u||(o.put(236,8),o.getLengthInBits()>=8*u));)o.put(17,8);return function(t,r){for(var e=0,n=0,o=0,i=new Array(r.length),a=new Array(r.length),u=0;u<r.length;u+=1){var f=r[u].dataCount,c=r[u].totalCount-f;n=Math.max(n,f),o=Math.max(o,c),i[u]=new Array(f);for(var g=0;g<i[u].length;g+=1)i[u][g]=255&t.getBuffer()[g+e];e+=f;var l=B.getErrorCorrectPolynomial(c),h=k(i[u],l.getLength()-1).mod(l);for(a[u]=new Array(l.getLength()-1),g=0;g<a[u].length;g+=1){var s=g+h.getLength()-a[u].length;a[u][g]=s>=0?h.getAt(s):0}}var v=0;for(g=0;g<r.length;g+=1)v+=r[g].totalCount;var d=new Array(v),w=0;for(g=0;g<n;g+=1)for(u=0;u<r.length;u+=1)g<i[u].length&&(d[w]=i[u][g],w+=1);for(g=0;g<o;g+=1)for(u=0;u<r.length;u+=1)g<a[u].length&&(d[w]=a[u][g],w+=1);return d}(o,n)};f.addData=function(t,r){var e=null;switch(r=r||"Byte"){case"Numeric":e=M(t);break;case"Alphanumeric":e=x(t);break;case"Byte":e=m(t);break;case"Kanji":e=L(t);break;default:throw"mode:"+r}u.push(e),a=null},f.isDark=function(t,r){if(t<0||i<=t||r<0||i<=r)throw t+","+r;return o[t][r]},f.getModuleCount=function(){return i},f.make=function(){if(e<1){for(var t=1;t<40;t++){for(var r=A.getRSBlocks(t,n),o=b(),i=0;i<u.length;i++){var a=u[i];o.put(a.getMode(),4),o.put(a.getLength(),B.getLengthInBits(a.getMode(),t)),a.write(o)}var g=0;for(i=0;i<r.length;i++)g+=r[i].dataCount;if(o.getLengthInBits()<=8*g)break}e=t}c(!1,function(){for(var t=0,r=0,e=0;e<8;e+=1){c(!0,e);var n=B.getLostPoint(f);(0==e||t>n)&&(t=n,r=e)}return r}())},f.createTableTag=function(t,r){t=t||2;var e="";e+='<table style="',e+=" border-width: 0px; border-style: none;",e+=" border-collapse: collapse;",e+=" padding: 0px; margin: "+(r=void 0===r?4*t:r)+"px;",e+='">',e+="<tbody>";for(var n=0;n<f.getModuleCount();n+=1){e+="<tr>";for(var o=0;o<f.getModuleCount();o+=1)e+='<td style="',e+=" border-width: 0px; border-style: none;",e+=" border-collapse: collapse;",e+=" padding: 0px; margin: 0px;",e+=" width: "+t+"px;",e+=" height: "+t+"px;",e+=" background-color: ",e+=f.isDark(n,o)?"#000000":"#ffffff",e+=";",e+='"/>';e+="</tr>"}return e+="</tbody>",e+="</table>"},f.createSvgTag=function(t,r,e,n){var o={};"object"==typeof arguments[0]&&(t=(o=arguments[0]).cellSize,r=o.margin,e=o.alt,n=o.title),t=t||2,r=void 0===r?4*t:r,(e="string"==typeof e?{text:e}:e||{}).text=e.text||null,e.id=e.text?e.id||"qrcode-description":null,(n="string"==typeof n?{text:n}:n||{}).text=n.text||null,n.id=n.text?n.id||"qrcode-title":null;var i,a,u,c,g=f.getModuleCount()*t+2*r,l="";for(c="l"+t+",0 0,"+t+" -"+t+",0 0,-"+t+"z ",l+='<svg version="1.1" xmlns="http://www.w3.org/2000/svg"',l+=o.scalable?"":' width="'+g+'px" height="'+g+'px"',l+=' viewBox="0 0 '+g+" "+g+'" ',l+=' preserveAspectRatio="xMinYMin meet"',l+=n.text||e.text?' role="img" aria-labelledby="'+y([n.id,e.id].join(" ").trim())+'"':"",l+=">",l+=n.text?'<title id="'+y(n.id)+'">'+y(n.text)+"</title>":"",l+=e.text?'<description id="'+y(e.id)+'">'+y(e.text)+"</description>":"",l+='<rect width="100%" height="100%" fill="white" cx="0" cy="0"/>',l+='<path d="',a=0;a<f.getModuleCount();a+=1)for(u=a*t+r,i=0;i<f.getModuleCount();i+=1)f.isDark(a,i)&&(l+="M"+(i*t+r)+","+u+c);return l+='" stroke="transparent" fill="black"/>',l+="</svg>"},f.createDataURL=function(t,r){t=t||2,r=void 0===r?4*t:r;var e=f.getModuleCount()*t+2*r,n=r,o=e-r;return T(e,e,function(r,e){if(n<=r&&r<o&&n<=e&&e<o){var i=Math.floor((r-n)/t),a=Math.floor((e-n)/t);return f.isDark(a,i)?0:1}return 1})},f.createImgTag=function(t,r,e){t=t||2,r=void 0===r?4*t:r;var n=f.getModuleCount()*t+2*r,o="";return o+="<img",o+=' src="',o+=f.createDataURL(t,r),o+='"',o+=' width="',o+=n,o+='"',o+=' height="',o+=n,o+='"',e&&(o+=' alt="',o+=y(e),o+='"'),o+="/>"};var y=function(t){for(var r="",e=0;e<t.length;e+=1){var n=t.charAt(e);switch(n){case"<":r+="&lt;";break;case">":r+="&gt;";break;case"&":r+="&amp;";break;case'"':r+="&quot;";break;default:r+=n}}return r};return f.createASCII=function(t,r){if((t=t||1)<2)return function(t){t=void 0===t?2:t;var r,e,n,o,i,a=1*f.getModuleCount()+2*t,u=t,c=a-t,g={"██":"█","█ ":"▀"," █":"▄","  ":" "},l={"██":"▀","█ ":"▀"," █":" ","  ":" "},h="";for(r=0;r<a;r+=2){for(n=Math.floor((r-u)/1),o=Math.floor((r+1-u)/1),e=0;e<a;e+=1)i="█",u<=e&&e<c&&u<=r&&r<c&&f.isDark(n,Math.floor((e-u)/1))&&(i=" "),u<=e&&e<c&&u<=r+1&&r+1<c&&f.isDark(o,Math.floor((e-u)/1))?i+=" ":i+="█",h+=t<1&&r+1>=c?l[i]:g[i];h+="\n"}return a%2&&t>0?h.substring(0,h.length-a-1)+Array(a+1).join("▀"):h.substring(0,h.length-1)}(r);t-=1,r=void 0===r?2*t:r;var e,n,o,i,a=f.getModuleCount()*t+2*r,u=r,c=a-r,g=Array(t+1).join("██"),l=Array(t+1).join("  "),h="",s="";for(e=0;e<a;e+=1){for(o=Math.floor((e-u)/t),s="",n=0;n<a;n+=1)i=1,u<=n&&n<c&&u<=e&&e<c&&f.isDark(o,Math.floor((n-u)/t))&&(i=0),s+=i?g:l;for(o=0;o<t;o+=1)h+=s+"\n"}return h.substring(0,h.length-1)},f.renderTo2dContext=function(t,r){r=r||2;for(var e=f.getModuleCount(),n=0;n<e;n++)for(var o=0;o<e;o++)t.fillStyle=f.isDark(n,o)?"black":"white",t.fillRect(o*r,n*r,r,r)},f};t.stringToBytes=(t.stringToBytesFuncs={default:function(t){for(var r=[],e=0;e<t.length;e+=1){var n=t.charCodeAt(e);r.push(255&n)}return r}}).default,t.createStringToBytes=function(t,r){var e=function(){for(var e=S(t),n=function(){var t=e.read();if(-1==t)throw"eof";return t},o=0,i={};;){var a=e.read();if(-1==a)break;var u=n(),f=n()<<8|n();i[String.fromCharCode(a<<8|u)]=f,o+=1}if(o!=r)throw o+" != "+r;return i}(),n="?".charCodeAt(0);return function(t){for(var r=[],o=0;o<t.length;o+=1){var i=t.charCodeAt(o);if(i<128)r.push(i);else{var a=e[t.charAt(o)];"number"==typeof a?(255&a)==a?r.push(a):(r.push(a>>>8),r.push(255&a)):r.push(n)}}return r}};var r,e,n,o,i,a=1,u=2,f=4,c=8,g={L:1,M:0,Q:3,H:2},l=0,h=1,s=2,v=3,d=4,w=5,p=6,y=7,B=(r=[[],[6,18],[6,22],[6,26],[6,30],[6,34],[6,22,38],[6,24,42],[6,26,46],[6,28,50],[6,30,54],[6,32,58],[6,34,62],[6,26,46,66],[6,26,48,70],[6,26,50,74],[6,30,54,78],[6,30,56,82],[6,30,58,86],[6,34,62,90],[6,28,50,72,94],[6,26,50,74,98],[6,30,54,78,102],[6,28,54,80,106],[6,32,58,84,110],[6,30,58,86,114],[6,34,62,90,118],[6,26,50,74,98,122],[6,30,54,78,102,126],[6,26,52,78,104,130],[6,30,56,82,108,134],[6,34,60,86,112,138],[6,30,58,86,114,142],[6,34,62,90,118,146],[6,30,54,78,102,126,150],[6,24,50,76,102,128,154],[6,28,54,80,106,132,158],[6,32,58,84,110,136,162],[6,26,54,82,110,138,166],[6,30,58,86,114,142,170]],e=1335,n=7973,i=function(t){for(var r=0;0!=t;)r+=1,t>>>=1;return r},(o={}).getBCHTypeInfo=function(t){for(var r=t<<10;i(r)-i(e)>=0;)r^=e<<i(r)-i(e);return 21522^(t<<10|r)},o.getBCHTypeNumber=function(t){for(var r=t<<12;i(r)-i(n)>=0;)r^=n<<i(r)-i(n);return t<<12|r},o.getPatternPosition=function(t){return r[t-1]},o.getMaskFunction=function(t){switch(t){case l:return function(t,r){return(t+r)%2==0};case h:return function(t,r){return t%2==0};case s:return function(t,r){return r%3==0};case v:return function(t,r){return(t+r)%3==0};case d:return function(t,r){return(Math.floor(t/2)+Math.floor(r/3))%2==0};case w:return function(t,r){return t*r%2+t*r%3==0};case p:return function(t,r){return(t*r%2+t*r%3)%2==0};case y:return function(t,r){return(t*r%3+(t+r)%2)%2==0};default:throw"bad maskPattern:"+t}},o.getErrorCorrectPolynomial=function(t){for(var r=k([1],0),e=0;e<t;e+=1)r=r.multiply(k([1,C.gexp(e)],0));return r},o.getLengthInBits=function(t,r){if(1<=r&&r<10)switch(t){case a:return 10;case u:return 9;case f:case c:return 8;default:throw"mode:"+t}else if(r<27)switch(t){case a:return 12;case u:return 11;case f:return 16;case c:return 10;default:throw"mode:"+t}else{if(!(r<41))throw"type:"+r;switch(t){case a:return 14;case u:return 13;case f:return 16;case c:return 12;default:throw"mode:"+t}}},o.getLostPoint=function(t){for(var r=t.getModuleCount(),e=0,n=0;n<r;n+=1)for(var o=0;o<r;o+=1){for(var i=0,a=t.isDark(n,o),u=-1;u<=1;u+=1)if(!(n+u<0||r<=n+u))for(var f=-1;f<=1;f+=1)o+f<0||r<=o+f||0==u&&0==f||a==t.isDark(n+u,o+f)&&(i+=1);i>5&&(e+=3+i-5)}for(n=0;n<r-1;n+=1)for(o=0;o<r-1;o+=1){var c=0;t.isDark(n,o)&&(c+=1),t.isDark(n+1,o)&&(c+=1),t.isDark(n,o+1)&&(c+=1),t.isDark(n+1,o+1)&&(c+=1),0!=c&&4!=c||(e+=3)}for(n=0;n<r;n+=1)for(o=0;o<r-6;o+=1)t.isDark(n,o)&&!t.isDark(n,o+1)&&t.isDark(n,o+2)&&t.isDark(n,o+3)&&t.isDark(n,o+4)&&!t.isDark(n,o+5)&&t.isDark(n,o+6)&&(e+=40);for(o=0;o<r;o+=1)for(n=0;n<r-6;n+=1)t.isDark(n,o)&&!t.isDark(n+1,o)&&t.isDark(n+2,o)&&t.isDark(n+3,o)&&t.isDark(n+4,o)&&!t.isDark(n+5,o)&&t.isDark(n+6,o)&&(e+=40);var g=0;for(o=0;o<r;o+=1)for(n=0;n<r;n+=1)t.isDark(n,o)&&(g+=1);return e+=Math.abs(100*g/r/r-50)/5*10},o),C=function(){for(var t=new Array(256),r=new Array(256),e=0;e<8;e+=1)t[e]=1<<e;for(e=8;e<256;e+=1)t[e]=t[e-4]^t[e-5]^t[e-6]^t[e-8];for(e=0;e<255;e+=1)r[t[e]]=e;var n={glog:function(t){if(t<1)throw"glog("+t+")";return r[t]},gexp:function(r){for(;r<0;)r+=255;for(;r>=256;)r-=255;return t[r]}};return n}();function k(t,r){if(void 0===t.length)throw t.length+"/"+r;var e=function(){for(var e=0;e<t.length&&0==t[e];)e+=1;for(var n=new Array(t.length-e+r),o=0;o<t.length-e;o+=1)n[o]=t[o+e];return n}(),n={getAt:function(t){return e[t]},getLength:function(){return e.length},multiply:function(t){for(var r=new Array(n.getLength()+t.getLength()-1),e=0;e<n.getLength();e+=1)for(var o=0;o<t.getLength();o+=1)r[e+o]^=C.gexp(C.glog(n.getAt(e))+C.glog(t.getAt(o)));return k(r,0)},mod:function(t){if(n.getLength()-t.getLength()<0)return n;for(var r=C.glog(n.getAt(0))-C.glog(t.getAt(0)),e=new Array(n.getLength()),o=0;o<n.getLength();o+=1)e[o]=n.getAt(o);for(o=0;o<t.getLength();o+=1)e[o]^=C.gexp(C.glog(t.getAt(o))+r);return k(e,0).mod(t)}};return n}var A=function(){var t=[[1,26,19],[1,26,16],[1,26,13],[1,26,9],[1,44,34],[1,44,28],[1,44,22],[1,44,16],[1,70,55],[1,70,44],[2,35,17],[2,35,13],[1,100,80],[2,50,32],[2,50,24],[4,25,9],[1,134,108],[2,67,43],[2,33,15,2,34,16],[2,33,11,2,34,12],[2,86,68],[4,43,27],[4,43,19],[4,43,15],[2,98,78],[4,49,31],[2,32,14,4,33,15],[4,39,13,1,40,14],[2,121,97],[2,60,38,2,61,39],[4,40,18,2,41,19],[4,40,14,2,41,15],[2,146,116],[3,58,36,2,59,37],[4,36,16,4,37,17],[4,36,12,4,37,13],[2,86,68,2,87,69],[4,69,43,1,70,44],[6,43,19,2,44,20],[6,43,15,2,44,16],[4,101,81],[1,80,50,4,81,51],[4,50,22,4,51,23],[3,36,12,8,37,13],[2,116,92,2,117,93],[6,58,36,2,59,37],[4,46,20,6,47,21],[7,42,14,4,43,15],[4,133,107],[8,59,37,1,60,38],[8,44,20,4,45,21],[12,33,11,4,34,12],[3,145,115,1,146,116],[4,64,40,5,65,41],[11,36,16,5,37,17],[11,36,12,5,37,13],[5,109,87,1,110,88],[5,65,41,5,66,42],[5,54,24,7,55,25],[11,36,12,7,37,13],[5,122,98,1,123,99],[7,73,45,3,74,46],[15,43,19,2,44,20],[3,45,15,13,46,16],[1,135,107,5,136,108],[10,74,46,1,75,47],[1,50,22,15,51,23],[2,42,14,17,43,15],[5,150,120,1,151,121],[9,69,43,4,70,44],[17,50,22,1,51,23],[2,42,14,19,43,15],[3,141,113,4,142,114],[3,70,44,11,71,45],[17,47,21,4,48,22],[9,39,13,16,40,14],[3,135,107,5,136,108],[3,67,41,13,68,42],[15,54,24,5,55,25],[15,43,15,10,44,16],[4,144,116,4,145,117],[17,68,42],[17,50,22,6,51,23],[19,46,16,6,47,17],[2,139,111,7,140,112],[17,74,46],[7,54,24,16,55,25],[34,37,13],[4,151,121,5,152,122],[4,75,47,14,76,48],[11,54,24,14,55,25],[16,45,15,14,46,16],[6,147,117,4,148,118],[6,73,45,14,74,46],[11,54,24,16,55,25],[30,46,16,2,47,17],[8,132,106,4,133,107],[8,75,47,13,76,48],[7,54,24,22,55,25],[22,45,15,13,46,16],[10,142,114,2,143,115],[19,74,46,4,75,47],[28,50,22,6,51,23],[33,46,16,4,47,17],[8,152,122,4,153,123],[22,73,45,3,74,46],[8,53,23,26,54,24],[12,45,15,28,46,16],[3,147,117,10,148,118],[3,73,45,23,74,46],[4,54,24,31,55,25],[11,45,15,31,46,16],[7,146,116,7,147,117],[21,73,45,7,74,46],[1,53,23,37,54,24],[19,45,15,26,46,16],[5,145,115,10,146,116],[19,75,47,10,76,48],[15,54,24,25,55,25],[23,45,15,25,46,16],[13,145,115,3,146,116],[2,74,46,29,75,47],[42,54,24,1,55,25],[23,45,15,28,46,16],[17,145,115],[10,74,46,23,75,47],[10,54,24,35,55,25],[19,45,15,35,46,16],[17,145,115,1,146,116],[14,74,46,21,75,47],[29,54,24,19,55,25],[11,45,15,46,46,16],[13,145,115,6,146,116],[14,74,46,23,75,47],[44,54,24,7,55,25],[59,46,16,1,47,17],[12,151,121,7,152,122],[12,75,47,26,76,48],[39,54,24,14,55,25],[22,45,15,41,46,16],[6,151,121,14,152,122],[6,75,47,34,76,48],[46,54,24,10,55,25],[2,45,15,64,46,16],[17,152,122,4,153,123],[29,74,46,14,75,47],[49,54,24,10,55,25],[24,45,15,46,46,16],[4,152,122,18,153,123],[13,74,46,32,75,47],[48,54,24,14,55,25],[42,45,15,32,46,16],[20,147,117,4,148,118],[40,75,47,7,76,48],[43,54,24,22,55,25],[10,45,15,67,46,16],[19,148,118,6,149,119],[18,75,47,31,76,48],[34,54,24,34,55,25],[20,45,15,61,46,16]],r=function(t,r){var e={};return e.totalCount=t,e.dataCount=r,e},e={};return e.getRSBlocks=function(e,n){var o=function(r,e){switch(e){case g.L:return t[4*(r-1)+0];case g.M:return t[4*(r-1)+1];case g.Q:return t[4*(r-1)+2];case g.H:return t[4*(r-1)+3];default:return}}(e,n);if(void 0===o)throw"bad rs block @ typeNumber:"+e+"/errorCorrectionLevel:"+n;for(var i=o.length/3,a=[],u=0;u<i;u+=1)for(var f=o[3*u+0],c=o[3*u+1],l=o[3*u+2],h=0;h<f;h+=1)a.push(r(c,l));return a},e}(),b=function(){var t=[],r=0,e={getBuffer:function(){return t},getAt:function(r){var e=Math.floor(r/8);return 1==(t[e]>>>7-r%8&1)},put:function(t,r){for(var n=0;n<r;n+=1)e.putBit(1==(t>>>r-n-1&1))},getLengthInBits:function(){return r},putBit:function(e){var n=Math.floor(r/8);t.length<=n&&t.push(0),e&&(t[n]|=128>>>r%8),r+=1}};return e},M=function(t){var r=a,e=t,n={getMode:function(){return r},getLength:function(t){return e.length},write:function(t){for(var r=e,n=0;n+2<r.length;)t.put(o(r.substring(n,n+3)),10),n+=3;n<r.length&&(r.length-n==1?t.put(o(r.substring(n,n+1)),4):r.length-n==2&&t.put(o(r.substring(n,n+2)),7))}},o=function(t){for(var r=0,e=0;e<t.length;e+=1)r=10*r+i(t.charAt(e));return r},i=function(t){if("0"<=t&&t<="9")return t.charCodeAt(0)-"0".charCodeAt(0);throw"illegal char :"+t};return n},x=function(t){var r=u,e=t,n={getMode:function(){return r},getLength:function(t){return e.length},write:function(t){for(var r=e,n=0;n+1<r.length;)t.put(45*o(r.charAt(n))+o(r.charAt(n+1)),11),n+=2;n<r.length&&t.put(o(r.charAt(n)),6)}},o=function(t){if("0"<=t&&t<="9")return t.charCodeAt(0)-"0".charCodeAt(0);if("A"<=t&&t<="Z")return t.charCodeAt(0)-"A".charCodeAt(0)+10;switch(t){case" ":return 36;case"$":return 37;case"%":return 38;case"*":return 39;case"+":return 40;case"-":return 41;case".":return 42;case"/":return 43;case":":return 44;default:throw"illegal char :"+t}};return n},m=function(r){var e=f,n=t.stringToBytes(r),o={getMode:function(){return e},getLength:function(t){return n.length},write:function(t){for(var r=0;r<n.length;r+=1)t.put(n[r],8)}};return o},L=function(r){var e=c,n=t.stringToBytesFuncs.SJIS;if(!n)throw"sjis not supported.";!function(){var t=n("友");if(2!=t.length||38726!=(t[0]<<8|t[1]))throw"sjis not supported."}();var o=n(r),i={getMode:function(){return e},getLength:function(t){return~~(o.length/2)},write:function(t){for(var r=o,e=0;e+1<r.length;){var n=(255&r[e])<<8|255&r[e+1];if(33088<=n&&n<=40956)n-=33088;else{if(!(57408<=n&&n<=60351))throw"illegal char at "+(e+1)+"/"+n;n-=49472}n=192*(n>>>8&255)+(255&n),t.put(n,13),e+=2}if(e<r.length)throw"illegal char at "+(e+1)}};return i},D=function(){var t=[],r={writeByte:function(r){t.push(255&r)},writeShort:function(t){r.writeByte(t),r.writeByte(t>>>8)},writeBytes:function(t,e,n){e=e||0,n=n||t.length;for(var o=0;o<n;o+=1)r.writeByte(t[o+e])},writeString:function(t){for(var e=0;e<t.length;e+=1)r.writeByte(t.charCodeAt(e))},toByteArray:function(){return t},toString:function(){var r="";r+="[";for(var e=0;e<t.length;e+=1)e>0&&(r+=","),r+=t[e];return r+="]"}};return r},S=function(t){var r=t,e=0,n=0,o=0,i={read:function(){for(;o<8;){if(e>=r.length){if(0==o)return-1;throw"unexpected end of file./"+o}var t=r.charAt(e);if(e+=1,"="==t)return o=0,-1;t.match(/^\s$/)||(n=n<<6|a(t.charCodeAt(0)),o+=6)}var i=n>>>o-8&255;return o-=8,i}},a=function(t){if(65<=t&&t<=90)return t-65;if(97<=t&&t<=122)return t-97+26;if(48<=t&&t<=57)return t-48+52;if(43==t)return 62;if(47==t)return 63;throw"c:"+t};return i},T=function(t,r,e){for(var n=function(t,r){var e=t,n=r,o=new Array(t*r),i={setPixel:function(t,r,n){o[r*e+t]=n},write:function(t){t.writeString("GIF87a"),t.writeShort(e),t.writeShort(n),t.writeByte(128),t.writeByte(0),t.writeByte(0),t.writeByte(0),t.writeByte(0),t.writeByte(0),t.writeByte(255),t.writeByte(255),t.writeByte(255),t.writeString(","),t.writeShort(0),t.writeShort(0),t.writeShort(e),t.writeShort(n),t.writeByte(0);var r=a(2);t.writeByte(2);for(var o=0;r.length-o>255;)t.writeByte(255),t.writeBytes(r,o,255),o+=255;t.writeByte(r.length-o),t.writeBytes(r,o,r.length-o),t.writeByte(0),t.writeString(";")}},a=function(t){for(var r=1<<t,e=1+(1<<t),n=t+1,i=u(),a=0;a<r;a+=1)i.add(String.fromCharCode(a));i.add(String.fromCharCode(r)),i.add(String.fromCharCode(e));var f,c,g,l=D(),h=(f=l,c=0,g=0,{write:function(t,r){if(t>>>r!=0)throw"length over";for(;c+r>=8;)f.writeByte(255&(t<<c|g)),r-=8-c,t>>>=8-c,g=0,c=0;g|=t<<c,c+=r},flush:function(){c>0&&f.writeByte(g)}});h.write(r,n);var s=0,v=String.fromCharCode(o[s]);for(s+=1;s<o.length;){var d=String.fromCharCode(o[s]);s+=1,i.contains(v+d)?v+=d:(h.write(i.indexOf(v),n),i.size()<4095&&(i.size()==1<<n&&(n+=1),i.add(v+d)),v=d)}return h.write(i.indexOf(v),n),h.write(e,n),h.flush(),l.toByteArray()},u=function(){var t={},r=0,e={add:function(n){if(e.contains(n))throw"dup key:"+n;t[n]=r,r+=1},size:function(){return r},indexOf:function(r){return t[r]},contains:function(r){return void 0!==t[r]}};return e};return i}(t,r),o=0;o<r;o+=1)for(var i=0;i<t;i+=1)n.setPixel(i,o,e(i,o));var a=D();n.write(a);for(var u=function(){var t=0,r=0,e=0,n="",o={},i=function(t){n+=String.fromCharCode(a(63&t))},a=function(t){if(t<0);else{if(t<26)return 65+t;if(t<52)return t-26+97;if(t<62)return t-52+48;if(62==t)return 43;if(63==t)return 47}throw"n:"+t};return o.writeByte=function(n){for(t=t<<8|255&n,r+=8,e+=1;r>=6;)i(t>>>r-6),r-=6},o.flush=function(){if(r>0&&(i(t<<6-r),t=0,r=0),e%3!=0)for(var o=3-e%3,a=0;a<o;a+=1)n+="="},o.toString=function(){return n},o}(),f=a.toByteArray(),c=0;c<f.length;c+=1)u.writeByte(f[c]);return u.flush(),"data:image/gif;base64,"+u};return t}();qrcode.stringToBytesFuncs["UTF-8"]=function(t){return function(t){for(var r=[],e=0;e<t.length;e++){var n=t.charCodeAt(e);n<128?r.push(n):n<2048?r.push(192|n>>6,128|63&n):n<55296||n>=57344?r.push(224|n>>12,128|n>>6&63,128|63&n):(e++,n=65536+((1023&n)<<10|1023&t.charCodeAt(e)),r.push(240|n>>18,128|n>>12&63,128|n>>6&63,128|63&n))}return r}(t)},function(t){"function"==typeof define&&define.amd?define([],t):"object"==typeof exports&&(module.exports=t())}(function(){return qrcode}),function(t){t.stringToBytes=t.stringToBytesFuncs["UTF-8"]}(qrcode);</script>
+
+    <!-- Settings Modal -->
+    <div id="settings-overlay" style="display:none;" class="fixed inset-0 bg-black/40 z-50 items-center justify-center p-3">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm flex flex-col overflow-hidden" style="max-height:92dvh;">
+            <div class="bg-green-500 text-white px-4 py-3 font-bold flex justify-between items-center">
+                <span>⚙️ 図形の大きさ</span>
+                <button onclick="closeSettings()" class="w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 leading-none">✕</button>
+            </div>
+            <div id="settings-tabs" class="flex flex-wrap gap-1 px-3 py-2 border-b border-green-100"></div>
+            <div class="flex-1 overflow-y-auto px-4 py-3">
+                <div id="settings-preview" class="flex flex-col items-center gap-1 mb-3"></div>
+                <div id="settings-fields" class="flex flex-col gap-2"></div>
+            </div>
+            <div class="p-3 border-t border-gray-200 flex gap-2">
+                <button onclick="resetShapeParams()" class="flex-1 px-3 py-2 rounded-xl font-bold text-sm bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-700">
+                    初期値にもどす
+                </button>
+                <button onclick="addFromSettings()" class="flex-1 px-3 py-2 rounded-xl font-bold text-sm bg-green-500 hover:bg-green-600 text-white border border-green-600">
+                    この形を追加
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Share Modal -->
+    <div id="share-overlay" style="display:none;" class="fixed inset-0 bg-black/40 z-50 items-center justify-center p-3">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm flex flex-col overflow-hidden" style="max-height:92dvh;">
+            <div class="bg-slate-600 text-white px-4 py-3 font-bold flex justify-between items-center">
+                <span>🔗 この設定のリンク</span>
+                <button onclick="closeShare()" class="w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 leading-none">✕</button>
+            </div>
+            <div class="flex-1 overflow-y-auto px-4 py-3 flex flex-col items-center gap-3">
+                <p class="text-xs text-gray-600 text-center leading-relaxed">
+                    このリンクを開くと、いま画面にある図形・補助線と大きさの設定がそのまま再現されます。<br>板書やプリントにQRコードを載せておけます。
+                </p>
+                <button id="share-include" onclick="toggleShareInclude()" class="w-full px-3 py-2 rounded-xl font-bold text-sm border bg-gray-100 text-gray-600 border-gray-300"></button>
+                <div id="share-qr" class="w-44 h-44 bg-white p-2 rounded-xl border border-gray-200"></div>
+                <p id="share-url" class="text-xs text-gray-500 break-all text-center leading-relaxed"></p>
+                <p id="share-note" class="text-xs text-red-600 text-center leading-relaxed" style="display:none;"></p>
+            </div>
+            <div class="p-3 border-t border-gray-200 flex gap-2">
+                <button onclick="copyShareUrl()" class="flex-1 px-3 py-2 rounded-xl font-bold text-sm bg-slate-600 hover:bg-slate-700 text-white border border-slate-700">
+                    リンクをコピー
+                </button>
+                <button onclick="closeShare()" class="flex-1 px-3 py-2 rounded-xl font-bold text-sm bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-700">
+                    とじる
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const SVG_NS = "http://www.w3.org/2000/svg";
+        const GRID_SIZE = 40;
+        const SNAP_DIST = 24;   // 頂点どうしがくっつく距離
+        const CUT_EPS = 0.8;    // これより近ければ「同じ場所」とみなす（px）
+        const MIN_PIECE_AREA = GRID_SIZE * GRID_SIZE * 0.02; // これより小さい切れはしは作らない
+
+        let shapes = [];
+        let placedShapes = []; // 「置いたとき」の図形（リセット用）
+        let guides = [];       // 補助線
+        let historyStack = []; // もどる用
+        let redoStack = [];    // すすむ用
+        let shapeIdCounter = 0;
+        let guideIdCounter = 0;
+        let currentTool = 'move'; // move, cut, rotate, flip, color, guide, erase
+
+        // Colors palette for clicking
+        const colors = [
+            {fill: '#fca5a5', stroke: '#ef4444'}, // red
+            {fill: '#93c5fd', stroke: '#3b82f6'}, // blue
+            {fill: '#fde047', stroke: '#eab308'}, // yellow
+            {fill: '#86efac', stroke: '#22c55e'}, // green
+            {fill: '#d8b4fe', stroke: '#a855f7'}, // purple
+            {fill: '#fdba74', stroke: '#f97316'}  // orange
+        ];
+
+        // Canvas Elements
+        const svg = document.getElementById('workspace');
+        const shapesLayer = document.getElementById('shapes-layer');
+        const guidesLayer = document.getElementById('guides-layer');
+        const cutLayer = document.getElementById('cut-layer');
+        const cutLine = document.getElementById('cut-line');
+        const guidePreview = document.getElementById('guide-preview');
+        const snapMarker = document.getElementById('snap-marker');
+        const toast = document.getElementById('instruction-toast');
+
+        // Interaction State
+        let isDragging = false;
+        let isCutting = false;
+        let isGuiding = false;
+        let dragTarget = null;
+        let startPt = {x: 0, y: 0};
+        let cutStartPt = {x: 0, y: 0};
+        let guideStartPt = {x: 0, y: 0};
+        let preDragState = null;   // ドラッグ開始時の状態（実際に動いたときだけ履歴に積む）
+        let anchorX = 0;           // マス目に合わせる基準（横）
+        let anchorY = 0;           // マス目に合わせる基準（縦）
+
+        function setTool(tool) {
+            currentTool = tool;
+            document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
+            const btn = document.getElementById('btn-' + tool);
+            if (btn) btn.classList.add('active');
+
+            // 補助線はこの2つのツールのときだけタップして選べる
+            guidesLayer.classList.toggle('pickable', tool === 'guide' || tool === 'erase');
+
+            const messages = {
+                'move': '👆 図形をドラッグして移動させよう',
+                'cut': '✂️ スワイプして切ろう。とちゅうで止めると切りこみになるよ',
+                'rotate': '🔄 図形をタップして90度回そう',
+                'flip': '🪞 図形をタップして左右にうら返そう',
+                'color': '🎨 図形をタップして色を変えよう',
+                'guide': '📏 スワイプして補助線を引こう。線をタップすると消えるよ',
+                'erase': '🧽 消したい図形や補助線をタップしよう'
+            };
+            showToast(messages[tool]);
+        }
+
+        function showToast(msg) {
+            toast.textContent = msg;
+            toast.style.opacity = '1';
+            setTimeout(() => { toast.style.opacity = '0.7'; }, 2000);
+        }
+
+        // ===== 履歴管理（もどる・すすむ） =====
+
+        // 現在の図形の状態を複製して取り出す
+        function cloneShapes(list) {
+            return list.map(s => {
+                const out = {
+                    id: s.id,
+                    points: s.points.map(p => ({x: p.x, y: p.y})),
+                    color: {fill: s.color.fill, stroke: s.color.stroke}
+                };
+                if (s.cutPath && s.cutPath.length) out.cutPath = s.cutPath.map(p => ({x: p.x, y: p.y}));
+                return out;
+            });
+        }
+
+        function cloneGuides(list) {
+            return list.map(g => ({id: g.id, x1: g.x1, y1: g.y1, x2: g.x2, y2: g.y2}));
+        }
+
+        function snapshot() {
+            return {
+                shapes: cloneShapes(shapes),
+                placed: cloneShapes(placedShapes),
+                guides: cloneGuides(guides)
+            };
+        }
+
+        function restore(state) {
+            shapes = cloneShapes(state.shapes);
+            placedShapes = cloneShapes(state.placed);
+            guides = cloneGuides(state.guides || []);
+        }
+
+        // 履歴に積む（新しい操作をしたら「すすむ」履歴は破棄）
+        function pushHistory(state) {
+            historyStack.push(state);
+            if (historyStack.length > 30) historyStack.shift();
+            redoStack = [];
+            updateHistoryButtons();
+        }
+
+        // 変更前に呼ぶ
+        function saveState() {
+            pushHistory(snapshot());
+        }
+
+        function undo() {
+            if (historyStack.length === 0) {
+                showToast('これ以上もどれません');
+                return;
+            }
+            redoStack.push(snapshot());
+            restore(historyStack.pop());
+            renderShapes();
+            updateHistoryButtons();
+            showToast('↩️ 1つ前にもどしました');
+        }
+
+        function redo() {
+            if (redoStack.length === 0) {
+                showToast('これ以上すすめません');
+                return;
+            }
+            historyStack.push(snapshot());
+            restore(redoStack.pop());
+            renderShapes();
+            updateHistoryButtons();
+            showToast('↪️ 1つ先にすすめました');
+        }
+
+        // 2つの図形リストが同じ形・同じ位置・同じ切りこみかどうか
+        function sameShapes(a, b) {
+            if (a.length !== b.length) return false;
+            for (let i = 0; i < a.length; i++) {
+                if (a[i].points.length !== b[i].points.length) return false;
+                if (a[i].color.fill !== b[i].color.fill) return false;
+                for (let j = 0; j < a[i].points.length; j++) {
+                    if (Math.abs(a[i].points[j].x - b[i].points[j].x) > 0.01) return false;
+                    if (Math.abs(a[i].points[j].y - b[i].points[j].y) > 0.01) return false;
+                }
+                const ca = a[i].cutPath || [];
+                const cb = b[i].cutPath || [];
+                if (ca.length !== cb.length) return false;
+                for (let j = 0; j < ca.length; j++) {
+                    if (Math.abs(ca[j].x - cb[j].x) > 0.01) return false;
+                    if (Math.abs(ca[j].y - cb[j].y) > 0.01) return false;
+                }
+            }
+            return true;
+        }
+
+        // 図形を置いた直後の状態に戻す（切る・動かす・回す・色ぬりを取り消す）
+        // 補助線は残ります（黒板の書きこみと同じあつかい）
+        function resetToPlaced() {
+            if (placedShapes.length === 0) {
+                showToast('先に図形を追加してね');
+                return;
+            }
+            if (sameShapes(shapes, placedShapes)) {
+                showToast('もう置いたときの状態です');
+                return;
+            }
+            saveState();
+            shapes = cloneShapes(placedShapes);
+            renderShapes();
+            setTool('move');
+            showToast('♻️ 置いたときの状態に戻しました');
+        }
+
+        // 図形も補助線も全部消して最初から。※もどるで元に戻せます
+        function clearAll() {
+            if (shapes.length === 0 && placedShapes.length === 0 && guides.length === 0) {
+                showToast('図形はありません');
+                return;
+            }
+            saveState();
+            shapes = [];
+            placedShapes = [];
+            guides = [];
+            renderShapes();
+            setTool('move');
+            showToast('🗑️ 全て消しました');
+        }
+
+        function updateHistoryButtons() {
+            const undoBtn = document.getElementById('btn-undo');
+            const redoBtn = document.getElementById('btn-redo');
+            undoBtn.classList.toggle('is-disabled', historyStack.length === 0);
+            redoBtn.classList.toggle('is-disabled', redoStack.length === 0);
+        }
+
+        // ===== マス目スナップ =====
+
+        // Snaps a value to the nearest grid intersection
+        function snap(val) {
+            return Math.round(val / GRID_SIZE) * GRID_SIZE;
+        }
+
+        // いちばんマスの線に近い頂点の座標を基準として返す
+        function findAnchor(points, axis) {
+            let best = points[0][axis];
+            let bestErr = Math.abs(snap(best) - best);
+            for (const p of points) {
+                const err = Math.abs(snap(p[axis]) - p[axis]);
+                if (err < bestErr - 0.0001) {
+                    bestErr = err;
+                    best = p[axis];
+                }
+            }
+            return best;
+        }
+
+        // ドラッグ中の移動量を決める（上から順に優先）
+        // ①ほかの図形の頂点にピッタリ重ねる → 隙間ができない
+        // ②ほかの図形の辺の上にのせる       → 斜めの辺でもピッタリつく
+        // ③どちらも近くになければマスの交点に合わせる
+        function computeSnap(rawDx, rawDy) {
+            const orig = dragTarget.originalPoints;
+            let best = null;
+            let bestDist = SNAP_DIST;
+
+            for (const shape of shapes) {
+                if (shape === dragTarget) continue;
+                for (const q of shape.points) {
+                    for (const p of orig) {
+                        const d = Math.hypot(q.x - (p.x + rawDx), q.y - (p.y + rawDy));
+                        if (d < bestDist) {
+                            bestDist = d;
+                            best = { dx: q.x - p.x, dy: q.y - p.y, marker: {x: q.x, y: q.y} };
+                        }
+                    }
+                }
+            }
+            if (best) return best;
+
+            // ②頂点をほかの図形の辺の上にのせる（少し近づけないとくっつかない）
+            let bestEdge = null;
+            let bestEdgeDist = SNAP_DIST * 0.6;
+            for (const shape of shapes) {
+                if (shape === dragTarget) continue;
+                const n = shape.points.length;
+                for (let i = 0; i < n; i++) {
+                    const a = shape.points[i];
+                    const b = shape.points[(i + 1) % n];
+                    for (const p of orig) {
+                        const m = {x: p.x + rawDx, y: p.y + rawDy};
+                        const proj = closestPointOnSegment(m, a, b);
+                        const d = Math.hypot(proj.x - m.x, proj.y - m.y);
+                        if (d < bestEdgeDist) {
+                            bestEdgeDist = d;
+                            bestEdge = { dx: proj.x - p.x, dy: proj.y - p.y, marker: {x: proj.x, y: proj.y} };
+                        }
+                    }
+                }
+            }
+            if (bestEdge) return bestEdge;
+
+            // ③マスの交点に合わせる（基準はいちばん線に近い頂点）
+            return {
+                dx: snap(anchorX + rawDx) - anchorX,
+                dy: snap(anchorY + rawDy) - anchorY,
+                marker: null
+            };
+        }
+
+        // 線分ABの上で、点Pにいちばん近い場所を返す
+        function closestPointOnSegment(p, a, b) {
+            const vx = b.x - a.x;
+            const vy = b.y - a.y;
+            const len2 = vx * vx + vy * vy;
+            if (len2 < 0.0001) return {x: a.x, y: a.y};
+            let t = ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2;
+            t = Math.max(0, Math.min(1, t));
+            return {x: a.x + vx * t, y: a.y + vy * t};
+        }
+
+        // くっつく先の頂点を光らせる
+        function showSnapMarker(pos) {
+            if (!pos) {
+                snapMarker.style.display = 'none';
+                return;
+            }
+            snapMarker.setAttribute('cx', pos.x);
+            snapMarker.setAttribute('cy', pos.y);
+            snapMarker.style.display = 'block';
+        }
+
+        function getMousePos(evt) {
+            let pt = svg.createSVGPoint();
+            pt.x = (typeof evt.clientX === 'number') ? evt.clientX : 0;
+            pt.y = (typeof evt.clientY === 'number') ? evt.clientY : 0;
+            return pt.matrixTransform(svg.getScreenCTM().inverse());
+        }
+
+        // ===== 図形のかたち（数値はすべて「マス目の数」）=====
+        // 左上を(0,0)としたマス目座標をつくる。すべて整数なので頂点は必ずマスの交点に乗る。
+        const SHAPE_SPECS = {
+            triangle: {
+                name: '三角形',
+                color: {fill: '#fca5a5', stroke: '#ef4444'},
+                params: [
+                    {key: 'base',   label: '底辺',           min: 1, max: 16, def: 6},
+                    {key: 'height', label: '高さ',           min: 1, max: 12, def: 4},
+                    {key: 'apex',   label: '頂点（左から）', min: 0, max: 16, def: 4}
+                ],
+                build: p => [[0, p.height], [p.base, p.height], [p.apex, 0]]
+            },
+            righttriangle: {
+                name: '直角三角形',
+                color: {fill: '#fdba74', stroke: '#f97316'},
+                params: [
+                    {key: 'base',   label: '底辺', min: 1, max: 16, def: 6},
+                    {key: 'height', label: '高さ', min: 1, max: 12, def: 4},
+                    {key: 'corner', label: '直角の位置', def: 'br',
+                     options: [['bl','左下'], ['br','右下'], ['tl','左上'], ['tr','右上']]}
+                ],
+                build: p => {
+                    const b = p.base, h = p.height;
+                    if (p.corner === 'bl') return [[0,0], [0,h], [b,h]];
+                    if (p.corner === 'tl') return [[0,0], [b,0], [0,h]];
+                    if (p.corner === 'tr') return [[0,0], [b,0], [b,h]];
+                    return [[0,h], [b,h], [b,0]]; // br
+                }
+            },
+            quadrilateral: {
+                name: '四角形',
+                color: {fill: '#93c5fd', stroke: '#3b82f6'},
+                params: [
+                    {key: 'width',  label: 'よこ', min: 1, max: 16, def: 6},
+                    {key: 'height', label: 'たて', min: 1, max: 12, def: 4}
+                ],
+                build: p => [[0,0], [p.width,0], [p.width,p.height], [0,p.height]]
+            },
+            parallelogram: {
+                name: '平行四辺形',
+                color: {fill: '#fde047', stroke: '#eab308'},
+                params: [
+                    {key: 'base',   label: '底辺',       min: 1, max: 16, def: 6},
+                    {key: 'height', label: '高さ',       min: 1, max: 12, def: 4},
+                    {key: 'shift',  label: '上辺のずれ', min: 0, max: 10, def: 2},
+                    {key: 'dir',    label: '傾き', def: 'lt',
+                     options: [['lt','左上→右下'], ['rt','右上→左下']]}
+                ],
+                build: p => {
+                    const b = p.base, h = p.height, s = p.shift;
+                    if (p.dir === 'rt') return [[s,0], [s+b,0], [b,h], [0,h]];
+                    return [[0,0], [b,0], [b+s,h], [s,h]]; // lt
+                }
+            },
+            trapezoid: {
+                name: '台形',
+                color: {fill: '#d8b4fe', stroke: '#a855f7'},
+                params: [
+                    {key: 'upper',  label: '上底',           min: 1, max: 16, def: 3},
+                    {key: 'lower',  label: '下底',           min: 1, max: 16, def: 9},
+                    {key: 'height', label: '高さ',           min: 1, max: 12, def: 4},
+                    {key: 'offset', label: '上底（左から）', min: 0, max: 14, def: 4}
+                ],
+                build: p => [[p.offset,0], [p.offset+p.upper,0], [p.lower,p.height], [0,p.height]]
+            },
+            rhombus: {
+                name: 'ひし形',
+                color: {fill: '#86efac', stroke: '#22c55e'},
+                params: [
+                    // 頂点をマスの交点に乗せるため2マスずつ変わります
+                    {key: 'dh', label: '対角線（よこ）', min: 2, max: 16, def: 8, step: 2},
+                    {key: 'dv', label: '対角線（たて）', min: 2, max: 12, def: 4, step: 2}
+                ],
+                build: p => [[p.dh/2,0], [p.dh,p.dv/2], [p.dh/2,p.dv], [0,p.dv/2]]
+            }
+        };
+
+        const STORAGE_KEY = 'tkk-zukei-shape-params';
+        let shapeParams = {};
+        let settingsType = 'triangle';
+
+        function defaultParams(type) {
+            const out = {};
+            SHAPE_SPECS[type].params.forEach(p => { out[p.key] = p.def; });
+            return out;
+        }
+
+        function loadShapeParams() {
+            Object.keys(SHAPE_SPECS).forEach(t => { shapeParams[t] = defaultParams(t); });
+            try {
+                const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+                if (saved) {
+                    Object.keys(SHAPE_SPECS).forEach(t => {
+                        if (!saved[t]) return;
+                        SHAPE_SPECS[t].params.forEach(p => {
+                            const v = saved[t][p.key];
+                            if (p.options) {
+                                if (p.options.some(o => o[0] === v)) shapeParams[t][p.key] = v;
+                            } else if (typeof v === 'number' && v >= p.min && v <= p.max) {
+                                shapeParams[t][p.key] = v;
+                            }
+                        });
+                    });
+                }
+            } catch (err) { /* 保存が使えない環境ではその場かぎりの設定になります */ }
+        }
+
+        function saveShapeParams() {
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(shapeParams)); } catch (err) { /* 無視 */ }
+        }
+
+        // 設定値からマス目座標をつくる（左上が(0,0)になるようにそろえる）
+        function buildUnits(type) {
+            let units = SHAPE_SPECS[type].build(shapeParams[type]);
+            const minX = Math.min(...units.map(u => u[0]));
+            const minY = Math.min(...units.map(u => u[1]));
+            return units.map(u => [u[0] - minX, u[1] - minY]);
+        }
+
+        // マス目いくつ分の面積か
+        function unitArea(units) {
+            let a = 0;
+            for (let i = 0; i < units.length; i++) {
+                const j = (i + 1) % units.length;
+                a += units[i][0] * units[j][1] - units[j][0] * units[i][1];
+            }
+            return Math.round(Math.abs(a) / 2 * 100) / 100;
+        }
+
+        // ===== 設定のリンク化・QRコード =====
+
+        // 設定を短い文字列にする（図形は「_」、項目は「.」区切り）
+        function encodeShapeParams() {
+            return Object.keys(SHAPE_SPECS).map(type =>
+                SHAPE_SPECS[type].params.map(p => shapeParams[type][p.key]).join('.')
+            ).join('_');
+        }
+
+        // 文字列から設定を復元する。おかしな値は初期値のまま使う
+        function decodeShapeParams(str) {
+            const types = Object.keys(SHAPE_SPECS);
+            const parts = String(str).split('_');
+            if (parts.length !== types.length) return false;
+            const next = {};
+            types.forEach((type, i) => {
+                next[type] = defaultParams(type);
+                const vals = parts[i].split('.');
+                SHAPE_SPECS[type].params.forEach((p, j) => {
+                    const raw = vals[j];
+                    if (raw === undefined) return;
+                    if (p.options) {
+                        if (p.options.some(o => o[0] === raw)) next[type][p.key] = raw;
+                    } else {
+                        const v = parseInt(raw, 10);
+                        if (Number.isFinite(v) && v >= p.min && v <= p.max) next[type][p.key] = v;
+                    }
+                });
+            });
+            shapeParams = next;
+            return true;
+        }
+
+        // 図形と補助線をまとめた左上の位置。これを基準にするので、
+        // 画面の大きさが違ってもならびがくずれません
+        function sceneOrigin() {
+            const xs = [], ys = [];
+            shapes.forEach(s => s.points.forEach(p => { xs.push(p.x); ys.push(p.y); }));
+            guides.forEach(g => { xs.push(g.x1, g.x2); ys.push(g.y1, g.y2); });
+            if (!xs.length) return null;
+            return {x: Math.min(...xs), y: Math.min(...ys)};
+        }
+
+        const round2 = v => Math.round(v * 100) / 100;
+
+        // 画面に置いてある図形を文字列にする（図形は「~」、数値は「,」区切り）
+        function encodeCanvas() {
+            const o = sceneOrigin();
+            if (!o || !shapes.length) return '';
+            return shapes.map(s => {
+                let ci = colors.findIndex(c => c.fill === s.color.fill);
+                if (ci < 0) ci = 0;
+                const nums = [];
+                s.points.forEach(p => {
+                    nums.push(round2((p.x - o.x) / GRID_SIZE));
+                    nums.push(round2((p.y - o.y) / GRID_SIZE));
+                });
+                return [ci].concat(nums).join(',');
+            }).join('~');
+        }
+
+        // 補助線を文字列にする（1本につき x1,y1,x2,y2）
+        function encodeGuides() {
+            const o = sceneOrigin();
+            if (!o || !guides.length) return '';
+            return guides.map(g => [
+                round2((g.x1 - o.x) / GRID_SIZE), round2((g.y1 - o.y) / GRID_SIZE),
+                round2((g.x2 - o.x) / GRID_SIZE), round2((g.y2 - o.y) / GRID_SIZE)
+            ].join(',')).join('~');
+        }
+
+        function parseCanvas(str) {
+            const groups = String(str).split('~').filter(Boolean);
+            if (!groups.length || groups.length > 80) return null;
+            const list = [];
+            for (const g of groups) {
+                const nums = g.split(',');
+                const ci = parseInt(nums[0], 10);
+                const coords = nums.slice(1).map(Number);
+                if (coords.length < 6 || coords.length % 2 !== 0) return null;
+                if (!coords.every(v => Number.isFinite(v) && Math.abs(v) < 500)) return null;
+                const units = [];
+                for (let i = 0; i < coords.length; i += 2) units.push({x: coords[i], y: coords[i + 1]});
+                const color = (Number.isFinite(ci) && ci >= 0 && ci < colors.length) ? colors[ci] : colors[0];
+                list.push({units, color});
+            }
+            return list;
+        }
+
+        function parseGuides(str) {
+            const groups = String(str).split('~').filter(Boolean);
+            if (!groups.length || groups.length > 60) return null;
+            const list = [];
+            for (const g of groups) {
+                const v = g.split(',').map(Number);
+                if (v.length !== 4) return null;
+                if (!v.every(n => Number.isFinite(n) && Math.abs(n) < 500)) return null;
+                list.push(v);
+            }
+            return list;
+        }
+
+        // 文字列から図形と補助線を並べ直す（まとめて画面の中央あたりに置く）
+        function decodeScene(zStr, gStr) {
+            const shapeList = zStr ? parseCanvas(zStr) : [];
+            const guideList = gStr ? parseGuides(gStr) : [];
+            if (shapeList === null || guideList === null) return false;
+            if (!shapeList.length && !guideList.length) return false;
+
+            const xs = [], ys = [];
+            shapeList.forEach(s => s.units.forEach(p => { xs.push(p.x); ys.push(p.y); }));
+            guideList.forEach(v => { xs.push(v[0], v[2]); ys.push(v[1], v[3]); });
+            const minX = Math.min(...xs), minY = Math.min(...ys);
+            const w = Math.max(...xs) - minX, h = Math.max(...ys) - minY;
+
+            const rect = svg.getBoundingClientRect();
+            const ox = snap(rect.width / 2 - (w * GRID_SIZE) / 2);
+            const oy = snap(rect.height / 2 - (h * GRID_SIZE) / 2);
+            const toPx = (ux, uy) => ({x: ox + (ux - minX) * GRID_SIZE, y: oy + (uy - minY) * GRID_SIZE});
+
+            shapes = shapeList.map(s => ({
+                id: 'shape_' + shapeIdCounter++,
+                points: s.units.map(p => toPx(p.x, p.y)),
+                color: {fill: s.color.fill, stroke: s.color.stroke}
+            }));
+            // 「リセット」で先生が仕込んだこの状態に戻れるようにする
+            placedShapes = cloneShapes(shapes);
+            guides = guideList.map(v => {
+                const a = toPx(v[0], v[1]);
+                const b = toPx(v[2], v[3]);
+                return {id: 'guide_' + guideIdCounter++, x1: a.x, y1: a.y, x2: b.x, y2: b.y};
+            });
+            return true;
+        }
+
+        // アドレスに図形や補助線がついていれば読み込む
+        function applyLinkScene() {
+            const hash = String(location.hash || '');
+            const z = hash.match(/[#&]z=([^&]+)/);
+            const g = hash.match(/[#&]g=([^&]+)/);
+            if (!z && !g) return false;
+            try {
+                return decodeScene(z ? decodeURIComponent(z[1]) : '', g ? decodeURIComponent(g[1]) : '');
+            } catch (err) {
+                return false;
+            }
+        }
+
+        // アドレスに設定がついていれば読み込む
+        function applyLinkParams() {
+            const m = String(location.hash || '').match(/[#&]s=([^&]+)/);
+            if (!m) return false;
+            try {
+                return decodeShapeParams(decodeURIComponent(m[1]));
+            } catch (err) {
+                return false;
+            }
+        }
+
+        let includeCanvas = true; // いまの図形もリンクに入れるか
+
+        function buildShareUrl() {
+            const base = location.origin + location.pathname + location.search;
+            let url = base + '#s=' + encodeShapeParams();
+            if (includeCanvas) {
+                const z = encodeCanvas();
+                if (z) url += '&z=' + z;
+                const g = encodeGuides();
+                if (g) url += '&g=' + g;
+            }
+            return url;
+        }
+
+        function toggleShareInclude() {
+            includeCanvas = !includeCanvas;
+            refreshShare();
+        }
+
+        function refreshShare() {
+            const url = buildShareUrl();
+            document.getElementById('share-url').textContent = url;
+
+            // 「いまの図形も入れる」ボタンの表示
+            const tgl = document.getElementById('share-include');
+            const on = includeCanvas && (shapes.length > 0 || guides.length > 0);
+            tgl.textContent = (on ? '☑' : '☐') + ' いまの図形も入れる（図形' + shapes.length + '個・補助線' + guides.length + '本）';
+            tgl.className = 'w-full px-3 py-2 rounded-xl font-bold text-sm border ' +
+                (on ? 'bg-slate-600 text-white border-slate-700' : 'bg-gray-100 text-gray-600 border-gray-300');
+
+            // QRコードをつくる（誤り訂正レベルM、サイズは自動）
+            const box = document.getElementById('share-qr');
+            try {
+                const qr = qrcode(0, 'M');
+                qr.addData(url);
+                qr.make();
+                box.innerHTML = qr.createSvgTag({cellSize: 4, margin: 4, scalable: true});
+                const svgEl = box.querySelector('svg');
+                svgEl.setAttribute('width', '100%');
+                svgEl.setAttribute('height', '100%');
+            } catch (err) {
+                box.innerHTML = '<p class="text-xs text-gray-500 p-2">図形が多すぎてQRコードを作れませんでした。図形を減らすか、「いまの図形も入れる」をオフにしてください。</p>';
+            }
+
+            // 注意書き
+            const note = document.getElementById('share-note');
+            const msgs = [];
+            if (location.protocol === 'file:') {
+                msgs.push('いまファイルを直接開いているため、このリンクは他の端末では開けません。ウェブに置いたページから作ってください。');
+            }
+            if (url.length > 500) {
+                msgs.push('図形が多いためQRコードが細かくなっています。読み取りにくいときは大きめに印刷してください。');
+            }
+            if (msgs.length) {
+                note.innerHTML = msgs.join('<br>');
+                note.style.display = 'block';
+            } else {
+                note.style.display = 'none';
+            }
+        }
+
+        function openShare() {
+            if (!shapes.length && !guides.length) includeCanvas = false;
+            refreshShare();
+            document.getElementById('share-overlay').style.display = 'flex';
+        }
+
+        function closeShare() {
+            document.getElementById('share-overlay').style.display = 'none';
+        }
+
+        function copyShareUrl() {
+            const url = buildShareUrl();
+            const done = () => showToast('🔗 リンクをコピーしました');
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(url).then(done).catch(() => fallbackCopy(url, done));
+            } else {
+                fallbackCopy(url, done);
+            }
+        }
+
+        function fallbackCopy(text, done) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand('copy'); done(); } catch (err) { showToast('コピーできませんでした'); }
+            document.body.removeChild(ta);
+        }
+
+        // ===== 図形メニューと設定パネル =====
+
+        // 設定にあわせたミニ図形のSVGをつくる
+        function iconSvg(type, size) {
+            const units = buildUnits(type);
+            const w = Math.max(...units.map(u => u[0])) || 1;
+            const h = Math.max(...units.map(u => u[1])) || 1;
+            const c = SHAPE_SPECS[type].color;
+            const pts = units.map(u => u[0] + ',' + u[1]).join(' ');
+            const m = 0.25;
+            return '<svg width="' + size + '" height="' + size + '" viewBox="' +
+                (-m) + ' ' + (-m) + ' ' + (w + m*2) + ' ' + (h + m*2) +
+                '" preserveAspectRatio="xMidYMid meet"><polygon points="' + pts +
+                '" fill="' + c.fill + '" stroke="' + c.stroke +
+                '" stroke-width="0.18" stroke-linejoin="round"/></svg>';
+        }
+
+        function renderMenu() {
+            const menu = document.getElementById('shape-menu');
+            menu.innerHTML = '';
+            Object.keys(SHAPE_SPECS).forEach(type => {
+                const btn = document.createElement('button');
+                btn.className = 'flex-shrink-0 bg-green-50 hover:bg-green-100 border-2 border-green-400 rounded-xl p-3 flex flex-col items-center gap-2 transition-transform hover:scale-105 active:scale-95';
+                btn.onclick = () => addShape(type);
+                btn.innerHTML = iconSvg(type, 40) +
+                    '<span class="text-sm font-bold text-green-800">' + SHAPE_SPECS[type].name + '</span>';
+                menu.appendChild(btn);
+            });
+        }
+
+        function openSettings() {
+            document.getElementById('settings-overlay').style.display = 'flex';
+            renderSettings();
+        }
+
+        function closeSettings() {
+            document.getElementById('settings-overlay').style.display = 'none';
+        }
+
+        function selectSettingsType(type) {
+            settingsType = type;
+            renderSettings();
+        }
+
+        function renderSettings() {
+            const spec = SHAPE_SPECS[settingsType];
+
+            // 図形のタブ
+            const tabs = document.getElementById('settings-tabs');
+            tabs.innerHTML = '';
+            Object.keys(SHAPE_SPECS).forEach(type => {
+                const b = document.createElement('button');
+                b.className = 'tab-btn px-3 py-1 rounded-full text-xs font-bold border border-green-300 bg-green-50 text-green-800' +
+                    (type === settingsType ? ' active' : '');
+                b.textContent = SHAPE_SPECS[type].name;
+                b.onclick = () => selectSettingsType(type);
+                tabs.appendChild(b);
+            });
+
+            // プレビューと面積
+            const units = buildUnits(settingsType);
+            const w = Math.max(...units.map(u => u[0]));
+            const h = Math.max(...units.map(u => u[1]));
+            let grid = '';
+            for (let x = 0; x <= w; x++) grid += '<line x1="' + x + '" y1="0" x2="' + x + '" y2="' + h + '" stroke="#cbd5e1" stroke-width="0.05"/>';
+            for (let y = 0; y <= h; y++) grid += '<line x1="0" y1="' + y + '" x2="' + w + '" y2="' + y + '" stroke="#cbd5e1" stroke-width="0.05"/>';
+            const c = spec.color;
+            const pts = units.map(u => u[0] + ',' + u[1]).join(' ');
+            const m = 0.4;
+            document.getElementById('settings-preview').innerHTML =
+                '<svg width="100%" height="150" viewBox="' + (-m) + ' ' + (-m) + ' ' + (w + m*2) + ' ' + (h + m*2) +
+                '" preserveAspectRatio="xMidYMid meet">' + grid +
+                '<polygon points="' + pts + '" fill="' + c.fill + '" fill-opacity="0.7" stroke="' + c.stroke +
+                '" stroke-width="0.12" stroke-linejoin="round"/></svg>' +
+                '<p class="text-sm font-bold text-gray-600">面積 ' + unitArea(units) + ' マス</p>';
+
+            // 数値の調節
+            const fields = document.getElementById('settings-fields');
+            fields.innerHTML = '';
+            spec.params.forEach(p => {
+                const row = document.createElement('div');
+                row.className = 'flex items-center justify-between gap-2';
+                const label = document.createElement('span');
+                label.className = 'text-sm font-bold text-gray-700';
+                label.textContent = p.label;
+                row.appendChild(label);
+
+                const ctrl = document.createElement('div');
+                ctrl.className = 'flex items-center gap-1';
+
+                if (p.options) {
+                    p.options.forEach(o => {
+                        const b = document.createElement('button');
+                        b.className = 'opt-btn px-2 py-1 rounded-lg text-xs font-bold border border-gray-300 bg-gray-50 text-gray-700' +
+                            (shapeParams[settingsType][p.key] === o[0] ? ' active' : '');
+                        b.textContent = o[1];
+                        b.onclick = () => setParam(p.key, o[0]);
+                        ctrl.appendChild(b);
+                    });
+                } else {
+                    const step = p.step || 1;
+                    const minus = document.createElement('button');
+                    minus.className = 'w-9 h-9 rounded-full bg-gray-100 hover:bg-gray-200 border border-gray-300 font-bold text-lg leading-none';
+                    minus.textContent = '－';
+                    minus.onclick = () => bumpParam(p.key, -step);
+                    const val = document.createElement('span');
+                    val.className = 'w-8 text-center font-bold text-lg text-gray-800';
+                    val.textContent = shapeParams[settingsType][p.key];
+                    const plus = document.createElement('button');
+                    plus.className = 'w-9 h-9 rounded-full bg-gray-100 hover:bg-gray-200 border border-gray-300 font-bold text-lg leading-none';
+                    plus.textContent = '＋';
+                    plus.onclick = () => bumpParam(p.key, step);
+                    ctrl.appendChild(minus);
+                    ctrl.appendChild(val);
+                    ctrl.appendChild(plus);
+                }
+                row.appendChild(ctrl);
+                fields.appendChild(row);
+            });
+        }
+
+        function bumpParam(key, delta) {
+            const p = SHAPE_SPECS[settingsType].params.find(q => q.key === key);
+            let v = shapeParams[settingsType][key] + delta;
+            v = Math.max(p.min, Math.min(p.max, v));
+            shapeParams[settingsType][key] = v;
+            afterParamChange();
+        }
+
+        function setParam(key, value) {
+            shapeParams[settingsType][key] = value;
+            afterParamChange();
+        }
+
+        function afterParamChange() {
+            saveShapeParams();
+            renderSettings();
+            renderMenu();
+        }
+
+        function resetShapeParams() {
+            shapeParams[settingsType] = defaultParams(settingsType);
+            afterParamChange();
+            showToast('⚙️ ' + SHAPE_SPECS[settingsType].name + 'を初期値にもどしました');
+        }
+
+        function addFromSettings() {
+            addShape(settingsType);
+            closeSettings();
+        }
+
+        // Add predefined shapes centered in view
+        function addShape(type) {
+            const spec = SHAPE_SPECS[type];
+            if (!spec) return;
+            const def = buildUnits(type);
+
+            // マス目の数から実際の大きさを求める
+            const w = Math.max(...def.map(u => u[0]));
+            const h = Math.max(...def.map(u => u[1]));
+
+            // 画面の中央あたりに置く。左上の基準点をマスの交点にそろえる
+            const rect = svg.getBoundingClientRect();
+            const ox = snap(rect.width / 2 - (w * GRID_SIZE) / 2);
+            const oy = snap(rect.height / 2 - (h * GRID_SIZE) / 2);
+
+            const points = def.map(u => ({
+                x: ox + u[0] * GRID_SIZE,
+                y: oy + u[1] * GRID_SIZE
+            }));
+
+            let colorSet = colors[placedShapes.length % colors.length];
+            saveState(); // 図形追加前に状態を保存
+            let newShape = {
+                id: 'shape_' + shapeIdCounter++,
+                points: points,
+                color: colorSet
+            };
+            shapes.push(newShape);
+            // 「リセット」で戻すために、置いたときの姿を記録しておく
+            placedShapes.push({
+                id: newShape.id,
+                points: points.map(p => ({x: p.x, y: p.y})),
+                color: {fill: colorSet.fill, stroke: colorSet.stroke}
+            });
+
+            renderShapes();
+            setTool('move');
+        }
+
+        // ===== 画面に描く =====
+
+        function renderShapes() {
+            shapesLayer.innerHTML = ''; // Clear layer
+
+            shapes.forEach((shape, index) => {
+                let polygon = document.createElementNS(SVG_NS, "polygon");
+                let pointsStr = shape.points.map(p => `${p.x},${p.y}`).join(" ");
+                polygon.setAttribute("points", pointsStr);
+                polygon.setAttribute("fill", shape.color.fill);
+                polygon.setAttribute("fill-opacity", "0.7"); // 塗りつぶしを70%の不透明度にして重なりを見やすく
+                polygon.setAttribute("stroke", shape.color.stroke);
+                polygon.setAttribute("stroke-linejoin", "round");
+                polygon.setAttribute("stroke-width", "2");
+                polygon.setAttribute("class", "shape-polygon");
+                polygon.setAttribute("data-id", shape.id);
+                polygon.setAttribute("data-index", index);
+
+                // Add shadow for better depth
+                polygon.setAttribute("filter", "drop-shadow(2px 2px 2px rgba(0,0,0,0.2))");
+
+                shapesLayer.appendChild(polygon);
+            });
+
+            renderCutPaths();
+            renderGuides();
+        }
+
+        // とちゅうで止まっている切りこみを赤い点線で描く
+        function renderCutPaths() {
+            cutLayer.innerHTML = '';
+            shapes.forEach(shape => {
+                if (!shape.cutPath || shape.cutPath.length < 2) return;
+                const pl = document.createElementNS(SVG_NS, 'polyline');
+                pl.setAttribute('points', shape.cutPath.map(p => p.x + ',' + p.y).join(' '));
+                pl.setAttribute('fill', 'none');
+                pl.setAttribute('stroke', '#ef4444');
+                pl.setAttribute('stroke-width', '3');
+                pl.setAttribute('stroke-dasharray', '7,5');
+                pl.setAttribute('stroke-linecap', 'round');
+                pl.setAttribute('stroke-linejoin', 'round');
+                cutLayer.appendChild(pl);
+
+                // 「ここから続けて切れるよ」という印
+                [shape.cutPath[0], shape.cutPath[shape.cutPath.length - 1]].forEach(p => {
+                    const c = document.createElementNS(SVG_NS, 'circle');
+                    c.setAttribute('cx', p.x);
+                    c.setAttribute('cy', p.y);
+                    c.setAttribute('r', '4.5');
+                    c.setAttribute('fill', '#ffffff');
+                    c.setAttribute('stroke', '#ef4444');
+                    c.setAttribute('stroke-width', '2.5');
+                    cutLayer.appendChild(c);
+                });
+            });
+        }
+
+        function renderGuides() {
+            guidesLayer.innerHTML = '';
+            guides.forEach(g => {
+                // 指でも押しやすいように、見えない太い線を下に重ねる
+                const hit = document.createElementNS(SVG_NS, 'line');
+                hit.setAttribute('x1', g.x1); hit.setAttribute('y1', g.y1);
+                hit.setAttribute('x2', g.x2); hit.setAttribute('y2', g.y2);
+                hit.setAttribute('stroke', 'transparent');
+                hit.setAttribute('stroke-width', '20');
+                hit.setAttribute('stroke-linecap', 'round');
+                hit.setAttribute('pointer-events', 'stroke');
+                hit.setAttribute('data-guide-id', g.id);
+                guidesLayer.appendChild(hit);
+
+                const vis = document.createElementNS(SVG_NS, 'line');
+                vis.setAttribute('x1', g.x1); vis.setAttribute('y1', g.y1);
+                vis.setAttribute('x2', g.x2); vis.setAttribute('y2', g.y2);
+                vis.setAttribute('stroke', '#475569');
+                vis.setAttribute('stroke-width', '2.5');
+                vis.setAttribute('stroke-dasharray', '8,6');
+                vis.setAttribute('stroke-linecap', 'round');
+                vis.setAttribute('pointer-events', 'none');
+                guidesLayer.appendChild(vis);
+            });
+        }
+
+        // マウス・タッチ・ペンをまとめて扱う（Pointer Events）
+        let activePointerId = null;
+
+        svg.addEventListener('pointerdown', onPointerDown);
+        svg.addEventListener('pointermove', onPointerMove);
+        svg.addEventListener('pointerup', onPointerUp);
+        svg.addEventListener('pointercancel', onPointerUp);
+
+        function onPointerDown(e) {
+            if (activePointerId !== null) return;              // 2本目の指は無視する
+            if (e.pointerType === 'mouse' && e.button !== 0) return; // 右クリックは無視
+            e.preventDefault();
+            activePointerId = e.pointerId;
+            // 指が図形の外に出ても操作が続くようにする
+            try { svg.setPointerCapture(e.pointerId); } catch (err) { /* 非対応環境では無視 */ }
+            startAction(e);
+        }
+
+        function onPointerMove(e) {
+            if (e.pointerId !== activePointerId) return;
+            e.preventDefault();
+            moveAction(e);
+        }
+
+        function onPointerUp(e) {
+            if (e.pointerId !== activePointerId) return;
+            try { svg.releasePointerCapture(e.pointerId); } catch (err) { /* 無視 */ }
+            activePointerId = null;
+            endAction(e);
+        }
+
+        // 画面から離れたときに操作が固まらないようにする
+        window.addEventListener('blur', () => {
+            if (activePointerId === null) return;
+            activePointerId = null;
+            endAction({clientX: 0, clientY: 0});
+        });
+
+        function startAction(e) {
+            let pt = getMousePos(e);
+            let target = e.target;
+
+            // 補助線をタップして消す
+            const guideId = (target && target.getAttribute) ? target.getAttribute('data-guide-id') : null;
+            if (guideId && (currentTool === 'guide' || currentTool === 'erase')) {
+                saveState();
+                guides = guides.filter(g => g.id !== guideId);
+                renderShapes();
+                showToast('📏 補助線を1本消しました');
+                return;
+            }
+
+            // Check if clicking on a shape
+            if (target.tagName === 'polygon') {
+                let shapeIndex = parseInt(target.getAttribute('data-index'), 10);
+                let shape = shapes[shapeIndex];
+
+                if (currentTool === 'move') {
+                    preDragState = snapshot(); // 動いたときだけ履歴に積む
+                    isDragging = true;
+                    dragTarget = shape;
+                    
+                    // Bring to front
+                    shapes.splice(shapeIndex, 1);
+                    shapes.push(dragTarget);
+                    renderShapes();
+
+                    startPt = pt;
+                    // 図形の元の頂点位置を記憶しておく
+                    dragTarget.originalPoints = dragTarget.points.map(p => ({ x: p.x, y: p.y }));
+                    // 切りこみもいっしょに動かす
+                    dragTarget.originalCutPath = dragTarget.cutPath ? dragTarget.cutPath.map(p => ({x: p.x, y: p.y})) : null;
+                    // マスの線に合わせる基準点（いちばん線に近い頂点）を決める
+                    anchorX = findAnchor(dragTarget.originalPoints, 'x');
+                    anchorY = findAnchor(dragTarget.originalPoints, 'y');
+                } 
+                else if (currentTool === 'rotate') {
+                    saveState(); // 回転前に状態を保存
+                    rotateShape(shape);
+                    renderShapes();
+                }
+                else if (currentTool === 'flip') {
+                    saveState(); // うら返す前に状態を保存
+                    flipShape(shape);
+                    renderShapes();
+                }
+                else if (currentTool === 'color') {
+                    saveState(); // 色変更前に状態を保存
+                    // Change Color
+                    let colorIdx = colors.findIndex(c => c.fill === shape.color.fill);
+                    shape.color = colors[(colorIdx + 1) % colors.length];
+                    renderShapes();
+                }
+                else if (currentTool === 'erase') {
+                    saveState(); // 消す前に状態を保存
+                    shapes.splice(shapeIndex, 1);
+                    // 切っていない図形をそのまま消したときは、リセットでも戻さない
+                    let placedIdx = placedShapes.findIndex(s => s.id === shape.id);
+                    if (placedIdx !== -1) placedShapes.splice(placedIdx, 1);
+                    renderShapes();
+                    showToast('🧽 図形を1つ消しました');
+                }
+            }
+
+            // Start cutting anywhere on canvas
+            if (currentTool === 'cut' && !isDragging) {
+                isCutting = true;
+                // 切り始めの点もマス目の交点にスナップさせる
+                cutStartPt = { x: snap(pt.x), y: snap(pt.y) };
+                cutLine.setAttribute("x1", cutStartPt.x);
+                cutLine.setAttribute("y1", cutStartPt.y);
+                cutLine.setAttribute("x2", cutStartPt.x);
+                cutLine.setAttribute("y2", cutStartPt.y);
+                cutLine.style.display = "block";
+            }
+
+            // 補助線を引きはじめる
+            if (currentTool === 'guide' && !isDragging) {
+                isGuiding = true;
+                guideStartPt = { x: snap(pt.x), y: snap(pt.y) };
+                guidePreview.setAttribute("x1", guideStartPt.x);
+                guidePreview.setAttribute("y1", guideStartPt.y);
+                guidePreview.setAttribute("x2", guideStartPt.x);
+                guidePreview.setAttribute("y2", guideStartPt.y);
+                guidePreview.style.display = "block";
+            }
+        }
+
+        function moveAction(e) {
+            let pt = getMousePos(e);
+
+            if (isDragging && dragTarget) {
+                let rawDx = pt.x - startPt.x;
+                let rawDy = pt.y - startPt.y;
+                let result = computeSnap(rawDx, rawDy);
+
+                dragTarget.points = dragTarget.originalPoints.map(p => ({
+                    x: p.x + result.dx,
+                    y: p.y + result.dy
+                }));
+                if (dragTarget.originalCutPath) {
+                    dragTarget.cutPath = dragTarget.originalCutPath.map(p => ({
+                        x: p.x + result.dx,
+                        y: p.y + result.dy
+                    }));
+                }
+                showSnapMarker(result.marker);
+                renderShapes();
+            }
+
+            if (isCutting) {
+                // ドラッグ中の切る線もマス目の交点にスナップさせる
+                let snappedPt = { x: snap(pt.x), y: snap(pt.y) };
+                cutLine.setAttribute("x2", snappedPt.x);
+                cutLine.setAttribute("y2", snappedPt.y);
+            }
+
+            if (isGuiding) {
+                let snappedPt = { x: snap(pt.x), y: snap(pt.y) };
+                guidePreview.setAttribute("x2", snappedPt.x);
+                guidePreview.setAttribute("y2", snappedPt.y);
+            }
+        }
+
+        function endAction(e) {
+            if (isDragging && dragTarget) {
+                // すでにマス目に合わせた位置で確定させる
+                let moved = dragTarget.points.some((p, i) =>
+                    p.x !== dragTarget.originalPoints[i].x || p.y !== dragTarget.originalPoints[i].y
+                );
+
+                delete dragTarget.originalPoints; // 不要になった元の座標を削除
+                delete dragTarget.originalCutPath;
+                isDragging = false;
+                dragTarget = null;
+                showSnapMarker(null);
+
+                if (moved && preDragState) pushHistory(preDragState);
+                preDragState = null;
+                renderShapes();
+            }
+
+            if (isCutting) {
+                isCutting = false;
+                cutLine.style.display = "none";
+                let pt = getMousePos(e);
+                let snappedPt = { x: snap(pt.x), y: snap(pt.y) };
+
+                // Only cut if the line is long enough (prevents accidental clicks)
+                let dist = Math.hypot(snappedPt.x - cutStartPt.x, snappedPt.y - cutStartPt.y);
+                if (dist > 10) {
+                    applyCutSegment(cutStartPt, snappedPt);
+                }
+            }
+
+            if (isGuiding) {
+                isGuiding = false;
+                guidePreview.style.display = "none";
+                let pt = getMousePos(e);
+                let snappedPt = { x: snap(pt.x), y: snap(pt.y) };
+                let dist = Math.hypot(snappedPt.x - guideStartPt.x, snappedPt.y - guideStartPt.y);
+                if (dist > 10) {
+                    saveState();
+                    guides.push({
+                        id: 'guide_' + guideIdCounter++,
+                        x1: guideStartPt.x, y1: guideStartPt.y,
+                        x2: snappedPt.x, y2: snappedPt.y
+                    });
+                    renderShapes();
+                    showToast('📏 補助線を引きました');
+                }
+            }
+        }
+
+        // 左右にうら返す（その場でひっくり返るので位置は変わらない）
+        function flipShape(shape) {
+            const minX = Math.min(...shape.points.map(p => p.x));
+            const maxX = Math.max(...shape.points.map(p => p.x));
+            const sum = minX + maxX; // 左右の折り返し線（中心の2倍）
+
+            // x座標を折り返す。頂点がマスの交点にあれば、うら返しても交点のまま
+            shape.points = shape.points.map(p => ({x: sum - p.x, y: p.y}));
+            // 頂点をたどる向きが逆になるので、順番も入れかえる
+            shape.points.reverse();
+            // 切りこみもいっしょにうら返す
+            if (shape.cutPath) shape.cutPath = shape.cutPath.map(p => ({x: sum - p.x, y: p.y}));
+        }
+
+        // 90度ずつ回す。
+        // 45度だと頂点がマスの交点から外れてしまい（1マス40px → 斜めは約28.28px）、
+        // マス目で面積を数えられなくなるため、直角に回すようにしています。
+        // かけ算を使わず引き算と足し算だけで計算するので、誤差はたまりません。
+        function rotateShape(shape) {
+            const xs = shape.points.map(p => p.x);
+            const ys = shape.points.map(p => p.y);
+            const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+            const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+
+            const turn = p => ({ x: cx - (p.y - cy), y: cy + (p.x - cx) }); // 時計回りに90度
+
+            const pts = shape.points.map(turn);
+            // たて＋よこのマス数が奇数の図形は、中心で回すと頂点が半マスずれます。
+            // ドラッグのときと同じ考え方で、いちばんマスの線に近い頂点を交点に戻します。
+            const ax = findAnchor(pts, 'x');
+            const ay = findAnchor(pts, 'y');
+            const fx = snap(ax) - ax;
+            const fy = snap(ay) - ay;
+
+            shape.points = pts.map(p => ({x: p.x + fx, y: p.y + fy}));
+            if (shape.cutPath) {
+                shape.cutPath = shape.cutPath.map(p => {
+                    const q = turn(p);
+                    return {x: q.x + fx, y: q.y + fy};
+                });
+            }
+        }
+
+        // ===== 切る（とちゅうで止まる切りこみに対応） =====
+        // 昔は「まっすぐ引いた線をどこまでも延長して切る」やり方でしたが、
+        // それだと切った形が必ず端から端までになってしまいます。
+        // いまは「実際にドラッグした線の分だけ」切ります。
+        // 反対側まで届かなかった線は切りこみとして図形に残り、
+        // その端から続きを切ると、L字などいろいろな形に分かれます。
+
+        function copyPt(p) { return {x: p.x, y: p.y}; }
+        function copyPath(path) { return path.map(copyPt); }
+        function samePoint(a, b) { return Math.hypot(a.x - b.x, a.y - b.y) < CUT_EPS; }
+
+        function polygonArea(pts) {
+            let a = 0;
+            for (let i = 0; i < pts.length; i++) {
+                const j = (i + 1) % pts.length;
+                a += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+            }
+            return Math.abs(a) / 2;
+        }
+
+        // 点が多角形の内側かどうか（辺の真上かどうかは別に調べます）
+        function pointInPolygon(p, poly) {
+            let inside = false;
+            for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+                const xi = poly[i].x, yi = poly[i].y;
+                const xj = poly[j].x, yj = poly[j].y;
+                if (((yi > p.y) !== (yj > p.y)) && (p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi)) {
+                    inside = !inside;
+                }
+            }
+            return inside;
+        }
+
+        // 多角形のふちのうち、その点にいちばん近い場所（何本目の辺の、どのあたりか）
+        function nearestBoundary(p, poly) {
+            const n = poly.length;
+            let best = {edge: 0, t: 0, dist: Infinity, point: copyPt(poly[0])};
+            for (let i = 0; i < n; i++) {
+                const a = poly[i], b = poly[(i + 1) % n];
+                const q = closestPointOnSegment(p, a, b);
+                const d = Math.hypot(p.x - q.x, p.y - q.y);
+                if (d < best.dist) {
+                    const vx = b.x - a.x, vy = b.y - a.y;
+                    const len2 = vx * vx + vy * vy;
+                    let t = len2 < 0.0001 ? 0 : ((q.x - a.x) * vx + (q.y - a.y) * vy) / len2;
+                    t = Math.max(0, Math.min(1, t));
+                    best = {edge: i, t: t, dist: d, point: q};
+                }
+            }
+            return best;
+        }
+
+        function isOnBoundary(p, poly) { return nearestBoundary(p, poly).dist < CUT_EPS; }
+        function isInsideStrict(p, poly) { return !isOnBoundary(p, poly) && pointInPolygon(p, poly); }
+
+        // 線分どうしの交点（どちらの線分の上にもある場合だけ返す）
+        function segIntersect(a, b, c, d) {
+            const rx = b.x - a.x, ry = b.y - a.y;
+            const sx = d.x - c.x, sy = d.y - c.y;
+            const den = rx * sy - ry * sx;
+            if (Math.abs(den) < 1e-9) return null; // 平行
+            const t = ((c.x - a.x) * sy - (c.y - a.y) * sx) / den;
+            const u = ((c.x - a.x) * ry - (c.y - a.y) * rx) / den;
+            if (t < -1e-9 || t > 1 + 1e-9 || u < -1e-9 || u > 1 + 1e-9) return null;
+            return {t: t, u: u, point: {x: a.x + rx * t, y: a.y + ry * t}};
+        }
+
+        // 切り線が図形のふちにさわっている場所を、線の順番どおりに集める
+        // pos は「線の何番目の区間の、どのあたりか」を表す数値
+        function collectHits(path, poly) {
+            const hits = [];
+            const n = poly.length;
+
+            // 線の折れ点がふちの上にある場合
+            for (let k = 0; k < path.length; k++) {
+                const nb = nearestBoundary(path[k], poly);
+                if (nb.dist < CUT_EPS) {
+                    hits.push({pos: k, point: copyPt(path[k]), edge: nb.edge, t: nb.t});
+                }
+            }
+            // 線がふちを横切っている場合
+            for (let k = 0; k < path.length - 1; k++) {
+                for (let i = 0; i < n; i++) {
+                    const r = segIntersect(path[k], path[k + 1], poly[i], poly[(i + 1) % n]);
+                    if (!r) continue;
+                    if (r.t < 1e-6 || r.t > 1 - 1e-6) continue; // 折れ点は上で処理済み
+                    hits.push({pos: k + r.t, point: r.point, edge: i, t: r.u});
+                }
+            }
+
+            hits.sort((a, b) => a.pos - b.pos);
+
+            // 同じ場所が二重に入らないようにする
+            const out = [];
+            for (const h of hits) {
+                const last = out[out.length - 1];
+                if (last && samePoint(last.point, h.point)) continue;
+                out.push(h);
+            }
+            return out;
+        }
+
+        // 2つのさわった場所のあいだの線を取り出す
+        function subPath(path, F, L) {
+            const out = [copyPt(F.point)];
+            for (let k = Math.floor(F.pos) + 1; k <= Math.ceil(L.pos); k++) {
+                if (k > F.pos + 1e-6 && k < L.pos - 1e-6 && path[k]) out.push(copyPt(path[k]));
+            }
+            out.push(copyPt(L.point));
+            return out;
+        }
+
+        // その線が図形の内側だけを通っているか（辺の上をなぞっていないか）
+        function pathInsideShape(path, poly) {
+            if (!path || path.length < 2) return false;
+            let len = 0;
+            for (let i = 0; i < path.length - 1; i++) {
+                const a = path[i], b = path[i + 1];
+                len += Math.hypot(b.x - a.x, b.y - a.y);
+                for (const t of [0.2, 0.5, 0.8]) {
+                    const m = {x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t};
+                    if (!isInsideStrict(m, poly)) return false;
+                }
+            }
+            return len > CUT_EPS * 2;
+        }
+
+        // ふちの上をfromからtoまで進んだときに通る頂点を集める
+        function walkVertices(poly, from, to) {
+            const n = poly.length;
+            const out = [];
+            if (from.edge === to.edge && to.t >= from.t) return out; // 同じ辺のすぐ先なら頂点は通らない
+            let i = (from.edge + 1) % n;
+            for (let c = 0; c < n; c++) {
+                out.push(copyPt(poly[i]));
+                if (i === to.edge) break;
+                i = (i + 1) % n;
+            }
+            return out;
+        }
+
+        // 図形を切り線で2つに分ける。分けられないときは null
+        function tryCutShape(poly, path) {
+            if (!path || path.length < 2 || poly.length < 3) return null;
+            const hits = collectHits(path, poly);
+            if (hits.length < 2) return null;
+
+            const F = hits[0], L = hits[1]; // 最初に入った所と、最初に出た所
+            const sub = subPath(path, F, L);
+            if (!pathInsideShape(sub, poly)) return null;
+
+            const piece1 = cleanPolygon(sub.concat(walkVertices(poly, L, F)));
+            const piece2 = cleanPolygon(copyPath(sub).reverse().concat(walkVertices(poly, F, L)));
+
+            if (piece1.length < 3 || piece2.length < 3) return null;
+            if (polygonArea(piece1) < MIN_PIECE_AREA || polygonArea(piece2) < MIN_PIECE_AREA) return null;
+            return [piece1, piece2];
+        }
+
+        // 切りこみとして残す部分だけを取り出す（図形の外にはみ出した分は捨てる）
+        function trimCutPath(path, poly) {
+            const hits = collectHits(path, poly);
+
+            if (hits.length === 0) {
+                return pathInsideShape(path, poly) ? copyPath(path) : null;
+            }
+
+            if (hits.length === 1) {
+                const F = hits[0];
+                const startInside = isInsideStrict(path[0], poly);
+                let out;
+                if (startInside) {
+                    out = [];
+                    for (let k = 0; k < path.length; k++) if (k < F.pos - 1e-6) out.push(copyPt(path[k]));
+                    out.push(copyPt(F.point));
+                } else {
+                    out = [copyPt(F.point)];
+                    for (let k = 0; k < path.length; k++) if (k > F.pos + 1e-6) out.push(copyPt(path[k]));
+                }
+                return pathInsideShape(out, poly) ? out : null;
+            }
+
+            const sub = subPath(path, hits[0], hits[hits.length - 1]);
+            return pathInsideShape(sub, poly) ? sub : null;
+        }
+
+        // その線が図形にさわっているか
+        function segmentTouchesShape(a, b, poly) {
+            if (pointInPolygon(a, poly) || pointInPolygon(b, poly)) return true;
+            if (isOnBoundary(a, poly) || isOnBoundary(b, poly)) return true;
+            const n = poly.length;
+            for (let i = 0; i < n; i++) {
+                if (segIntersect(a, b, poly[i], poly[(i + 1) % n])) return true;
+            }
+            return false;
+        }
+
+        // すでにある切りこみと今ひいた線をつなぐ
+        function combineCutPath(shape, a, b) {
+            const cp = shape.cutPath;
+            if (cp && cp.length >= 2) {
+                const first = cp[0], last = cp[cp.length - 1];
+                if (samePoint(a, last))  return {path: copyPath(cp).concat([copyPt(b)]), replaced: false};
+                if (samePoint(b, last))  return {path: copyPath(cp).concat([copyPt(a)]), replaced: false};
+                if (samePoint(a, first)) return {path: [copyPt(b)].concat(copyPath(cp)), replaced: false};
+                if (samePoint(b, first)) return {path: [copyPt(a)].concat(copyPath(cp)), replaced: false};
+            }
+            if (!segmentTouchesShape(a, b, shape.points)) return null; // この図形には関係ない線
+            return {path: [copyPt(a), copyPt(b)], replaced: !!(cp && cp.length >= 2)};
+        }
+
+        // ドラッグ1回分の切り線を、画面じゅうの図形にあてはめる
+        function applyCutSegment(a, b) {
+            const before = snapshot();
+            const next = [];
+            let cutCount = 0, pendingCount = 0, replacedCount = 0, changed = false;
+
+            for (const shape of shapes) {
+                const combined = combineCutPath(shape, a, b);
+                if (!combined) { next.push(shape); continue; }
+
+                const pieces = tryCutShape(shape.points, combined.path);
+                if (pieces) {
+                    cutCount++;
+                    changed = true;
+                    // 切ったあとの2つは同じ色にして、もとが1つだったことがわかるようにする
+                    next.push({id: 'shape_' + shapeIdCounter++, points: pieces[0], color: shape.color});
+                    next.push({id: 'shape_' + shapeIdCounter++, points: pieces[1], color: shape.color});
+                    continue;
+                }
+
+                const trimmed = trimCutPath(combined.path, shape.points);
+                if (trimmed) {
+                    shape.cutPath = trimmed;
+                    if (combined.replaced) replacedCount++;
+                    pendingCount++;
+                    changed = true;
+                }
+                next.push(shape);
+            }
+
+            if (!changed) {
+                showToast('図形の上でスワイプしてね');
+                return;
+            }
+
+            pushHistory(before);
+            shapes = next;
+            renderShapes();
+
+            if (cutCount) showToast('✂️ ジョキッ！図形を切りました');
+            else if (replacedCount) showToast('✂️ 新しい切りこみに引き直しました');
+            else showToast('✂️ 切りこみを入れました。まるい印から続けて切ると分かれるよ');
+        }
+
+        // 同じ位置に重なった頂点を取り除く
+        function cleanPolygon(poly) {
+            let out = [];
+            for (const p of poly) {
+                const last = out[out.length - 1];
+                if (last && Math.hypot(last.x - p.x, last.y - p.y) < CUT_EPS) continue;
+                out.push(p);
+            }
+            const first = out[0];
+            const last = out[out.length - 1];
+            if (out.length > 1 && Math.hypot(first.x - last.x, first.y - last.y) < CUT_EPS) out.pop();
+            return out;
+        }
+
+        // 背景をタップしたら設定パネルを閉じる
+        document.getElementById('settings-overlay').addEventListener('click', (e) => {
+            if (e.target.id === 'settings-overlay') closeSettings();
+        });
+        document.getElementById('share-overlay').addEventListener('click', (e) => {
+            if (e.target.id === 'share-overlay') closeShare();
+        });
+
+        // パソコンのキーボード操作
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeSettings();
+                closeShare();
+                return;
+            }
+            if (!(e.ctrlKey || e.metaKey)) return;
+            const k = e.key.toLowerCase();
+            if (k === 'z') {
+                e.preventDefault();
+                if (e.shiftKey) redo(); else undo();
+            } else if (k === 'y') {
+                e.preventDefault();
+                redo();
+            }
+        });
+
+        // Setup Initial state
+        loadShapeParams();
+        if (applyLinkParams()) saveShapeParams(); // リンクの設定が優先
+        renderMenu();
+        if (applyLinkScene()) renderShapes();     // リンクに図形や補助線が入っていれば並べる
+        updateHistoryButtons();
+        setTimeout(() => showToast('左のメニューから図形を追加してね！'), 500);
+
+    </script>
+</body>
+</html>
